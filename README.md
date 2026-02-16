@@ -5,6 +5,7 @@ HTTP server implementation for the Codex Gerrit plugin. This service exposes a R
 ## Features
 
 - Exposes a `POST /run` endpoint to execute CLI commands.
+- Exposes a `GET /models` endpoint to fetch available LiteLLM models.
 - Supports streaming output via newline-delimited JSON (NDJSON).
 - Supports all CLIs used by `codex.gerrit`.
 - Handles environment variable propagation (e.g., LiteLLM config).
@@ -45,6 +46,8 @@ The server looks for CLI executables in the system PATH by default. You can over
 | `GEMINI_PATH` | `gemini` | Path to Gemini CLI |
 | `OPENCODE_PATH` | `opencode` | Path to OpenCode CLI |
 | `QWEN_PATH` | `qwen` | Path to Qwen CLI |
+| `LITELLM_API_BASE` | *(unset)* | Default LiteLLM base URL used by `GET /models` when query param is omitted |
+| `LITELLM_API_KEY` | *(unset)* | Default LiteLLM API key used by `GET /models` when query param is omitted |
 
 ### Docker Mode
 
@@ -104,6 +107,35 @@ This test now validates:
 - A `codex.serve` container built from this module's `Dockerfile` can execute `POST /run` requests by launching the configured `CODEX_DOCKER_IMAGE`.
 
 ## API
+
+### `GET /models`
+
+Fetches available model IDs from LiteLLM.
+
+The server tries both `<base>/models` and `<base>/v1/models`.
+
+This endpoint uses environment configuration only:
+
+- `LITELLM_API_BASE` (required)
+- `LITELLM_API_KEY` (optional)
+
+**Example:**
+
+```bash
+curl "http://localhost:8000/models"
+```
+
+**Response:**
+
+```json
+{
+  "models": ["gpt-4", "claude-3-sonnet"],
+  "count": 2
+}
+```
+
+If LiteLLM cannot be reached or returns invalid data, the endpoint returns `502`.
+If `LITELLM_API_BASE` is unset, it returns `400`.
 
 ### `POST /run`
 

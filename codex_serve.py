@@ -1,6 +1,8 @@
 import os
 import asyncio
 import json
+import urllib.request
+import urllib.error
 from typing import List, Optional, Dict
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
@@ -30,6 +32,80 @@ CLI_PATHS = {
 
 # Optional Docker configuration
 DOCKER_IMAGE = os.environ.get("CODEX_DOCKER_IMAGE")
+
+
+def _join_url(base: str, path: str) -> str:
+    return f"{base.rstrip('/')}/{path.lstrip('/')}"
+
+
+async def _fetch_litellm_models(url: str, api_key: Optional[str]) -> dict:
+    headers = {"Accept": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    req = urllib.request.Request(url, headers=headers, method="GET")
+
+    def _do_request() -> dict:
+        with urllib.request.urlopen(req, timeout=15) as response:
+            body = response.read().decode("utf-8", errors="replace")
+            return json.loads(body)
+
+    return await asyncio.to_thread(_do_request)
+
+
+@app.get("/models")
+async def get_models():
+    base_url = os.environ.get("LITELLM_API_BASE")
+    api_key = os.environ.get("LITELLM_API_KEY")
+
+    if not base_url:
+        raise HTTPException(
+            status_code=400,
+            detail="Missing LiteLLM base URL. Set LITELLM_API_BASE."
+        )
+
+    candidate_urls = [
+        _join_url(base_url, "/models"),
+        _join_url(base_url, "/v1/models"),
+    ]
+
+    payload = None
+    last_error = None
+
+    for url in candidate_urls:
+        try:
+            payload = await _fetch_litellm_models(url, api_key)
+            break
+        except urllib.error.HTTPError as err:
+            err_body = err.read().decode("utf-8", errors="replace")
+            last_error = f"HTTP {err.code} from {url}: {err_body}"
+        except urllib.error.URLError as err:
+            last_error = f"Failed to reach {url}: {err.reason}"
+        except json.JSONDecodeError:
+            last_error = f"Invalid JSON from {url}"
+        except Exception as err:
+            last_error = f"Error from {url}: {str(err)}"
+
+    if payload is None:
+        raise HTTPException(status_code=502, detail=last_error or "Failed to fetch models")
+
+    raw_models = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(raw_models, list):
+        raw_models = payload if isinstance(payload, list) else []
+
+    model_ids = []
+    for item in raw_models:
+        if isinstance(item, dict):
+            model_id = item.get("id")
+            if isinstance(model_id, str) and model_id:
+                model_ids.append(model_id)
+        elif isinstance(item, str):
+            model_ids.append(item)
+
+    return {
+        "models": sorted(set(model_ids)),
+        "count": len(set(model_ids)),
+    }
 
 @app.post("/run")
 async def run_cli(req: RunRequest):

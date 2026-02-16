@@ -16,10 +16,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "[1/4] Building CLI Docker image from codex.docker: ${CLI_IMAGE_TAG}"
+echo "[1/5] Building CLI Docker image from codex.docker: ${CLI_IMAGE_TAG}"
 docker build -t "${CLI_IMAGE_TAG}" -f "${DOCKER_DIR}/Dockerfile" "${DOCKER_DIR}"
 
-echo "[2/4] Running CLI image smoke tests in container"
+echo "[2/5] Running CLI image smoke tests in container"
 docker run --rm "${CLI_IMAGE_TAG}" bash -lc '
 set -euo pipefail
 
@@ -46,10 +46,10 @@ done
 echo "CLI image smoke tests passed."
 '
 
-echo "[3/4] Building codex.serve Docker image: ${SERVE_IMAGE_TAG}"
+echo "[3/5] Building codex.serve Docker image: ${SERVE_IMAGE_TAG}"
 docker build -t "${SERVE_IMAGE_TAG}" -f "${SCRIPT_DIR}/Dockerfile" "${SCRIPT_DIR}"
 
-echo "[4/4] Running codex.serve with CODEX_DOCKER_IMAGE=${CLI_IMAGE_TAG}"
+echo "[4/5] Running codex.serve with CODEX_DOCKER_IMAGE=${CLI_IMAGE_TAG}"
 docker run -d \
 	--name "${SERVE_CONTAINER_NAME}" \
 	-p "${SERVE_PORT}:8000" \
@@ -69,6 +69,25 @@ done
 
 if [ "${ready}" -ne 1 ]; then
 	echo "codex.serve did not become ready in time."
+	docker logs "${SERVE_CONTAINER_NAME}" || true
+	exit 1
+fi
+
+echo "[5/5] Verifying /models env-only configuration behavior"
+models_status="$(curl -sS -o /tmp/codex_models_resp.txt -w "%{http_code}" "http://127.0.0.1:${SERVE_PORT}/models")"
+if [ "${models_status}" != "400" ]; then
+	echo "Expected /models to return 400 when LITELLM_API_BASE is unset, got: ${models_status}"
+	echo "Response body:"
+	cat /tmp/codex_models_resp.txt
+	docker logs "${SERVE_CONTAINER_NAME}" || true
+	exit 1
+fi
+
+models_status_with_query="$(curl -sS -o /tmp/codex_models_query_resp.txt -w "%{http_code}" "http://127.0.0.1:${SERVE_PORT}/models?litellm_base_url=http://localhost:4000&litellm_api_key=sk-test")"
+if [ "${models_status_with_query}" != "400" ]; then
+	echo "Expected /models to ignore query params and return 400 without env config, got: ${models_status_with_query}"
+	echo "Response body:"
+	cat /tmp/codex_models_query_resp.txt
 	docker logs "${SERVE_CONTAINER_NAME}" || true
 	exit 1
 fi
