@@ -58,7 +58,8 @@ python codex_serve.py
 When enabled:
 1. `codex.serve` calls `docker run --rm -i ...` for every request.
 2. Environment variables from the request (like `LITELLM_API_KEY`) are passed via `-e` flags.
-3. The paths configured in `CODEX_PATH` etc. refer to paths *inside* the container container.
+3. The paths configured in `CODEX_PATH` etc. refer to paths *inside* the execution container.
+4. If `codex.serve` itself runs in Docker, mount `/var/run/docker.sock` so it can start sibling containers.
 
 ## Usage
 
@@ -89,6 +90,18 @@ This configuration:
 - Configures `CODEX_DOCKER_IMAGE` to `craftslab/codex-cli-env:latest` for executing CLIs safely. The server container will spawn this image for each request.
 
 See [docker-compose.yml](docker-compose.yml) for details.
+
+### Smoke Test (Docker Mode)
+
+To verify Docker mode end-to-end (including `CODEX_DOCKER_IMAGE`), run:
+
+```bash
+./test.sh
+```
+
+This test now validates:
+- The CLI image built from `codex.docker/Dockerfile` is Ubuntu-based and all supported CLIs are callable.
+- A `codex.serve` container built from this module's `Dockerfile` can execute `POST /run` requests by launching the configured `CODEX_DOCKER_IMAGE`.
 
 ## API
 
