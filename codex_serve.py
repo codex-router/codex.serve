@@ -107,6 +107,15 @@ async def get_models():
         "count": len(set(model_ids)),
     }
 
+
+@app.get("/clis")
+async def get_clis():
+    clis = sorted(CLI_PATHS.keys())
+    return {
+        "clis": clis,
+        "count": len(clis),
+    }
+
 @app.post("/run")
 async def run_cli(req: RunRequest):
     if req.cli not in CLI_PATHS:

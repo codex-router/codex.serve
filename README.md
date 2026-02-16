@@ -6,6 +6,7 @@ HTTP server implementation for the Codex Gerrit plugin. This service exposes a R
 
 - Exposes a `POST /run` endpoint to execute CLI commands.
 - Exposes a `GET /models` endpoint to fetch available LiteLLM models.
+- Exposes a `GET /clis` endpoint to list supported CLI names.
 - Supports streaming output via newline-delimited JSON (NDJSON).
 - Supports all CLIs used by `codex.gerrit`.
 - Handles environment variable propagation (e.g., LiteLLM config).
@@ -136,6 +137,25 @@ curl "http://localhost:8000/models"
 
 If LiteLLM cannot be reached or returns invalid data, the endpoint returns `502`.
 If `LITELLM_API_BASE` is unset, it returns `400`.
+
+### `GET /clis`
+
+Returns the supported CLI names based on the keys in server-side `CLI_PATHS`.
+
+**Example:**
+
+```bash
+curl "http://localhost:8000/clis"
+```
+
+**Response:**
+
+```json
+{
+  "clis": ["claude", "codex", "gemini", "opencode", "qwen"],
+  "count": 5
+}
+```
 
 ### `POST /run`
 

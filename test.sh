@@ -73,36 +73,94 @@ if [ "${ready}" -ne 1 ]; then
 	exit 1
 fi
 
-echo "[5/5] Verifying /models env-only configuration behavior"
-models_status="$(curl -sS -o /tmp/codex_models_resp.txt -w "%{http_code}" "http://127.0.0.1:${SERVE_PORT}/models")"
-if [ "${models_status}" != "400" ]; then
-	echo "Expected /models to return 400 when LITELLM_API_BASE is unset, got: ${models_status}"
-	echo "Response body:"
-	cat /tmp/codex_models_resp.txt
-	docker logs "${SERVE_CONTAINER_NAME}" || true
+echo "[5/5] Testing codex.serve APIs (/clis, /models, /run)"
+TMP_DIR="$(mktemp -d)"
+CLIS_BODY="${TMP_DIR}/clis.json"
+MODELS_BODY="${TMP_DIR}/models.json"
+RUN_BODY="${TMP_DIR}/run.ndjson"
+
+echo "- Testing GET /clis"
+CLIS_STATUS="$(curl -sS -o "${CLIS_BODY}" -w "%{http_code}" "http://127.0.0.1:${SERVE_PORT}/clis")"
+if [ "${CLIS_STATUS}" != "200" ]; then
+	echo "Expected HTTP 200 from /clis, got ${CLIS_STATUS}"
+	cat "${CLIS_BODY}"
 	exit 1
 fi
 
-models_status_with_query="$(curl -sS -o /tmp/codex_models_query_resp.txt -w "%{http_code}" "http://127.0.0.1:${SERVE_PORT}/models?litellm_base_url=http://localhost:4000&litellm_api_key=sk-test")"
-if [ "${models_status_with_query}" != "400" ]; then
-	echo "Expected /models to ignore query params and return 400 without env config, got: ${models_status_with_query}"
-	echo "Response body:"
-	cat /tmp/codex_models_query_resp.txt
-	docker logs "${SERVE_CONTAINER_NAME}" || true
+python3 - "${CLIS_BODY}" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+	data = json.load(f)
+
+expected = {"claude", "codex", "gemini", "opencode", "qwen"}
+clis = data.get("clis")
+count = data.get("count")
+
+if not isinstance(clis, list):
+	raise SystemExit("/clis response missing list field 'clis'")
+
+if set(clis) != expected:
+	raise SystemExit(f"/clis response mismatch: got {clis}")
+
+if count != len(expected):
+	raise SystemExit(f"/clis count mismatch: got {count}, expected {len(expected)}")
+PY
+
+echo "- Testing GET /models (expecting 400 when LITELLM_API_BASE is unset)"
+MODELS_STATUS="$(curl -sS -o "${MODELS_BODY}" -w "%{http_code}" "http://127.0.0.1:${SERVE_PORT}/models")"
+if [ "${MODELS_STATUS}" != "400" ]; then
+	echo "Expected HTTP 400 from /models when LITELLM_API_BASE is unset, got ${MODELS_STATUS}"
+	cat "${MODELS_BODY}"
 	exit 1
 fi
 
-response="$(curl -sS "http://127.0.0.1:${SERVE_PORT}/run" \
+python3 - "${MODELS_BODY}" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+	data = json.load(f)
+
+detail = data.get("detail", "")
+if "LITELLM_API_BASE" not in detail:
+	raise SystemExit(f"/models error detail did not mention LITELLM_API_BASE: {detail}")
+PY
+
+echo "- Testing POST /run"
+curl -sS -N -o "${RUN_BODY}" \
+	-X POST "http://127.0.0.1:${SERVE_PORT}/run" \
 	-H "Content-Type: application/json" \
-	-d '{"cli":"codex","args":["--version"],"stdin":""}')"
+	-d '{"cli":"codex","args":["--version"],"stdin":""}'
 
-echo "- Verifying Docker mode command execution response"
-if ! grep -Eq '"type"[[:space:]]*:[[:space:]]*"exit".*"code"[[:space:]]*:[[:space:]]*0' <<<"${response}"; then
-	echo "Expected successful exit from Docker mode run, but got:"
-	echo "${response}"
-	docker logs "${SERVE_CONTAINER_NAME}" || true
-	exit 1
-fi
+python3 - "${RUN_BODY}" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+events = []
+
+with open(path, "r", encoding="utf-8") as f:
+	for line in f:
+		line = line.strip()
+		if not line:
+			continue
+		events.append(json.loads(line))
+
+if not events:
+	raise SystemExit("/run returned no NDJSON events")
+
+exit_events = [e for e in events if e.get("type") == "exit"]
+if not exit_events:
+	raise SystemExit("/run response missing exit event")
+
+exit_code = exit_events[-1].get("code")
+if not isinstance(exit_code, int):
+	raise SystemExit(f"/run exit code is not an integer: {exit_code}")
+PY
+
+rm -rf "${TMP_DIR}"
 
 echo "Docker mode smoke test passed."
 echo "Test completed successfully."
