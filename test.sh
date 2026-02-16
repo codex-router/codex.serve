@@ -57,9 +57,10 @@ docker run -d \
 	-e CODEX_DOCKER_IMAGE="${CLI_IMAGE_TAG}" \
 	"${SERVE_IMAGE_TAG}" >/dev/null
 
+echo "- Waiting for codex.serve readiness..."
 ready=0
 for _ in $(seq 1 30); do
-	if curl -sS -o /dev/null "http://127.0.0.1:${SERVE_PORT}/docs"; then
+	if curl -fsS -o /dev/null "http://127.0.0.1:${SERVE_PORT}/docs" 2>/dev/null; then
 		ready=1
 		break
 	fi
