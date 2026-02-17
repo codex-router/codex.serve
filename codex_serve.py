@@ -1,8 +1,10 @@
 import os
 import asyncio
 import json
+import ssl
 import urllib.request
 import urllib.error
+import urllib.parse
 from typing import List, Optional, Dict
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
@@ -41,6 +43,7 @@ def _join_url(base: str, path: str) -> str:
 def _build_model_urls(base_url: str) -> List[str]:
     normalized = base_url.rstrip("/")
     urls = []
+    path = urllib.parse.urlparse(normalized).path.rstrip("/")
 
     if normalized.endswith("/models"):
         urls.append(normalized)
@@ -49,6 +52,10 @@ def _build_model_urls(base_url: str) -> List[str]:
     else:
         urls.append(_join_url(normalized, "/models"))
         urls.append(_join_url(normalized, "/v1/models"))
+        # Some OpenAI-compatible gateways expose models under /openai/models.
+        if path in ("", "/"):
+            urls.append(_join_url(normalized, "/openai/models"))
+            urls.append(_join_url(normalized, "/openai/v1/models"))
 
     # Deduplicate while preserving order.
     return list(dict.fromkeys(urls))
@@ -85,16 +92,28 @@ def _build_docker_env(cli: str, args: List[str], req_env: Optional[Dict[str, str
 
 
 async def _fetch_litellm_models(url: str, api_key: Optional[str]) -> dict:
-    headers = {"Accept": "application/json"}
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "codex-serve/1.0",
+    }
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
+        # Keep compatibility with providers that expect these key headers.
         headers["api-key"] = api_key
         headers["x-api-key"] = api_key
 
     req = urllib.request.Request(url, headers=headers, method="GET")
 
+    ssl_context = ssl.create_default_context()
+    try:
+        import certifi
+
+        ssl_context = ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        pass
+
     def _do_request() -> dict:
-        with urllib.request.urlopen(req, timeout=15) as response:
+        with urllib.request.urlopen(req, timeout=15, context=ssl_context) as response:
             body = response.read().decode("utf-8", errors="replace")
             return json.loads(body)
 
