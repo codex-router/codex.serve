@@ -38,6 +38,37 @@ def _join_url(base: str, path: str) -> str:
     return f"{base.rstrip('/')}/{path.lstrip('/')}"
 
 
+def _extract_model_from_args(args: List[str]) -> Optional[str]:
+    for idx, arg in enumerate(args):
+        if arg in ("--model", "-m"):
+            if idx + 1 < len(args):
+                model = args[idx + 1].strip()
+                return model or None
+            return None
+    return None
+
+
+def _build_docker_env(cli: str, args: List[str], req_env: Optional[Dict[str, str]]) -> Dict[str, str]:
+    docker_env = dict(req_env or {})
+
+    # Required by codex.docker entrypoint for provider-specific env mapping.
+    docker_env["CLI_PROVIDER_NAME"] = cli
+
+    # Accept both base-url names and normalize to both for compatibility.
+    base_url = docker_env.get("LITELLM_BASE_URL") or docker_env.get("LITELLM_API_BASE")
+    if base_url:
+        docker_env["LITELLM_BASE_URL"] = base_url
+        docker_env["LITELLM_API_BASE"] = base_url
+
+    # If no explicit model env provided, infer from common CLI flags.
+    if not docker_env.get("LITELLM_MODEL"):
+        inferred_model = _extract_model_from_args(args)
+        if inferred_model:
+            docker_env["LITELLM_MODEL"] = inferred_model
+
+    return docker_env
+
+
 async def _fetch_litellm_models(url: str, api_key: Optional[str]) -> dict:
     headers = {"Accept": "application/json"}
     if api_key:
@@ -55,13 +86,13 @@ async def _fetch_litellm_models(url: str, api_key: Optional[str]) -> dict:
 
 @app.get("/models")
 async def get_models():
-    base_url = os.environ.get("LITELLM_API_BASE")
+    base_url = os.environ.get("LITELLM_API_BASE") or os.environ.get("LITELLM_BASE_URL")
     api_key = os.environ.get("LITELLM_API_KEY")
 
     if not base_url:
         raise HTTPException(
             status_code=400,
-            detail="Missing LiteLLM base URL. Set LITELLM_API_BASE."
+            detail="Missing LiteLLM base URL. Set LITELLM_API_BASE (or LITELLM_BASE_URL)."
         )
 
     candidate_urls = [
@@ -127,10 +158,9 @@ async def run_cli(req: RunRequest):
         # Run inside Docker
         command = ["docker", "run", "--rm", "-i"]
 
-        # Pass environment variables
-        if req.env:
-            for k, v in req.env.items():
-                 command.extend(["-e", f"{k}={v}"])
+        docker_env = _build_docker_env(req.cli, req.args, req.env)
+        for k, v in docker_env.items():
+            command.extend(["-e", f"{k}={v}"])
 
         command.append(DOCKER_IMAGE)
         # Use simple CLI name inside container (matches Dockerfile symlinks)

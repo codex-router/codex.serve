@@ -47,7 +47,8 @@ The server looks for CLI executables in the system PATH by default. You can over
 | `GEMINI_PATH` | `gemini` | Path to Gemini CLI |
 | `OPENCODE_PATH` | `opencode` | Path to OpenCode CLI |
 | `QWEN_PATH` | `qwen` | Path to Qwen CLI |
-| `LITELLM_API_BASE` | *(unset)* | Default LiteLLM base URL used by `GET /models` when query param is omitted |
+| `LITELLM_API_BASE` | *(unset)* | Default LiteLLM base URL used by `GET /models` (alias of `LITELLM_BASE_URL`) |
+| `LITELLM_BASE_URL` | *(unset)* | Default LiteLLM base URL used by `GET /models` (alias of `LITELLM_API_BASE`) |
 | `LITELLM_API_KEY` | *(unset)* | Default LiteLLM API key used by `GET /models` when query param is omitted |
 
 ### Docker Mode
@@ -62,8 +63,11 @@ python codex_serve.py
 When enabled:
 1. `codex.serve` calls `docker run --rm -i ...` for every request.
 2. Environment variables from the request (like `LITELLM_API_KEY`) are passed via `-e` flags.
-3. The paths configured in `CODEX_PATH` etc. refer to paths *inside* the execution container.
-4. If `codex.serve` itself runs in Docker, mount `/var/run/docker.sock` so it can start sibling containers.
+3. `CLI_PROVIDER_NAME` is automatically set from the requested `cli`.
+4. `LITELLM_BASE_URL` and `LITELLM_API_BASE` are normalized as aliases (if either is provided, both are passed).
+5. `LITELLM_MODEL` is inferred from `--model`/`-m` args when not explicitly provided.
+6. The paths configured in `CODEX_PATH` etc. refer to paths *inside* the execution container.
+7. If `codex.serve` itself runs in Docker, mount `/var/run/docker.sock` so it can start sibling containers.
 
 ## Usage
 
@@ -117,7 +121,7 @@ The server tries both `<base>/models` and `<base>/v1/models`.
 
 This endpoint uses environment configuration only:
 
-- `LITELLM_API_BASE` (required)
+- `LITELLM_API_BASE` or `LITELLM_BASE_URL` (required; either one)
 - `LITELLM_API_KEY` (optional)
 
 **Example:**
@@ -136,7 +140,7 @@ curl "http://localhost:8000/models"
 ```
 
 If LiteLLM cannot be reached or returns invalid data, the endpoint returns `502`.
-If `LITELLM_API_BASE` is unset, it returns `400`.
+If both `LITELLM_API_BASE` and `LITELLM_BASE_URL` are unset, it returns `400`.
 
 ### `GET /clis`
 
@@ -169,7 +173,7 @@ Executes a CLI command.
   "args": ["--model", "gpt-4"],
   "stdin": "Prompt text...",
   "env": {
-    "LITELLM_API_BASE": "..."
+    "LITELLM_BASE_URL": "..."
   }
 }
 ```
