@@ -46,7 +46,26 @@ def _extract_model_from_args(args: List[str]) -> Optional[str]:
                 model = args[idx + 1].strip()
                 return model or None
             return None
+        if arg.startswith("--model="):
+            model = arg.split("=", 1)[1].strip()
+            return model or None
     return None
+
+
+def _strip_model_args(args: List[str]) -> List[str]:
+    normalized_args: List[str] = []
+    idx = 0
+    while idx < len(args):
+        arg = args[idx]
+        if arg in ("--model", "-m"):
+            idx += 2
+            continue
+        if arg.startswith("--model="):
+            idx += 1
+            continue
+        normalized_args.append(arg)
+        idx += 1
+    return normalized_args
 
 
 def _build_docker_env(cli: str, args: List[str], req_env: Optional[Dict[str, str]]) -> Dict[str, str]:
@@ -100,14 +119,21 @@ async def run_cli(req: RunRequest):
         # Run inside Docker
         command = ["docker", "run", "--rm", "-i"]
 
+        normalized_args = req.args
         docker_env = _build_docker_env(req.cli, req.args, req.env)
+
+        # opencode in codex.docker expects model via LITELLM_MODEL and will inject
+        # a provider-aware --model value for non-interactive runs.
+        if req.cli == "opencode":
+            normalized_args = _strip_model_args(req.args)
+
         for k, v in docker_env.items():
             command.extend(["-e", f"{k}={v}"])
 
         command.append(DOCKER_IMAGE)
         # Use simple CLI name inside container (matches Dockerfile symlinks)
         command.append(req.cli)
-        command.extend(req.args)
+        command.extend(normalized_args)
     else:
         # Run locally
         executable = req.cli
