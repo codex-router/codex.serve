@@ -38,6 +38,22 @@ def _join_url(base: str, path: str) -> str:
     return f"{base.rstrip('/')}/{path.lstrip('/')}"
 
 
+def _build_model_urls(base_url: str) -> List[str]:
+    normalized = base_url.rstrip("/")
+    urls = []
+
+    if normalized.endswith("/models"):
+        urls.append(normalized)
+    elif normalized.endswith("/v1"):
+        urls.append(_join_url(normalized, "/models"))
+    else:
+        urls.append(_join_url(normalized, "/models"))
+        urls.append(_join_url(normalized, "/v1/models"))
+
+    # Deduplicate while preserving order.
+    return list(dict.fromkeys(urls))
+
+
 def _extract_model_from_args(args: List[str]) -> Optional[str]:
     for idx, arg in enumerate(args):
         if arg in ("--model", "-m"):
@@ -54,11 +70,10 @@ def _build_docker_env(cli: str, args: List[str], req_env: Optional[Dict[str, str
     # Required by codex.docker entrypoint for provider-specific env mapping.
     docker_env["CLI_PROVIDER_NAME"] = cli
 
-    # Accept both base-url names and normalize to both for compatibility.
-    base_url = docker_env.get("LITELLM_BASE_URL") or docker_env.get("LITELLM_API_BASE")
+    # Use only LITELLM_BASE_URL for base URL configuration.
+    base_url = docker_env.get("LITELLM_BASE_URL")
     if base_url:
         docker_env["LITELLM_BASE_URL"] = base_url
-        docker_env["LITELLM_API_BASE"] = base_url
 
     # If no explicit model env provided, infer from common CLI flags.
     if not docker_env.get("LITELLM_MODEL"):
@@ -73,6 +88,8 @@ async def _fetch_litellm_models(url: str, api_key: Optional[str]) -> dict:
     headers = {"Accept": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
+        headers["api-key"] = api_key
+        headers["x-api-key"] = api_key
 
     req = urllib.request.Request(url, headers=headers, method="GET")
 
@@ -86,22 +103,20 @@ async def _fetch_litellm_models(url: str, api_key: Optional[str]) -> dict:
 
 @app.get("/models")
 async def get_models():
-    base_url = os.environ.get("LITELLM_API_BASE") or os.environ.get("LITELLM_BASE_URL")
+    base_url = os.environ.get("LITELLM_BASE_URL")
     api_key = os.environ.get("LITELLM_API_KEY")
 
     if not base_url:
         raise HTTPException(
             status_code=400,
-            detail="Missing LiteLLM base URL. Set LITELLM_API_BASE (or LITELLM_BASE_URL)."
+            detail="Missing LiteLLM base URL. Set LITELLM_BASE_URL."
         )
 
-    candidate_urls = [
-        _join_url(base_url, "/models"),
-        _join_url(base_url, "/v1/models"),
-    ]
+    candidate_urls = _build_model_urls(base_url)
 
     payload = None
     last_error = None
+    last_http_status = None
 
     for url in candidate_urls:
         try:
@@ -110,6 +125,7 @@ async def get_models():
         except urllib.error.HTTPError as err:
             err_body = err.read().decode("utf-8", errors="replace")
             last_error = f"HTTP {err.code} from {url}: {err_body}"
+            last_http_status = err.code
         except urllib.error.URLError as err:
             last_error = f"Failed to reach {url}: {err.reason}"
         except json.JSONDecodeError:
@@ -118,6 +134,8 @@ async def get_models():
             last_error = f"Error from {url}: {str(err)}"
 
     if payload is None:
+        if last_http_status is not None and 400 <= last_http_status < 500:
+            raise HTTPException(status_code=last_http_status, detail=last_error or "Upstream rejected request")
         raise HTTPException(status_code=502, detail=last_error or "Failed to fetch models")
 
     raw_models = payload.get("data") if isinstance(payload, dict) else None

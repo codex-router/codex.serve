@@ -11,3 +11,6 @@ services:
     environment:
       # Tell codex.serve to use the CLI docker image
       - CODEX_DOCKER_IMAGE=craftslab/codex-cli-env:latest
+      # LiteLLM endpoint and credentials
+      - LITELLM_BASE_URL=${LITELLM_BASE_URL}
+      - LITELLM_API_KEY=${LITELLM_API_KEY}

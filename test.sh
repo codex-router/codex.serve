@@ -108,10 +108,10 @@ if count != len(expected):
 	raise SystemExit(f"/clis count mismatch: got {count}, expected {len(expected)}")
 PY
 
-echo "- Testing GET /models (expecting 400 when both LITELLM_API_BASE and LITELLM_BASE_URL are unset)"
+echo "- Testing GET /models (expecting 400 when LITELLM_BASE_URL is unset)"
 MODELS_STATUS="$(curl -sS -o "${MODELS_BODY}" -w "%{http_code}" "http://127.0.0.1:${SERVE_PORT}/models")"
 if [ "${MODELS_STATUS}" != "400" ]; then
-	echo "Expected HTTP 400 from /models when both LiteLLM base URL env vars are unset, got ${MODELS_STATUS}"
+	echo "Expected HTTP 400 from /models when LITELLM_BASE_URL is unset, got ${MODELS_STATUS}"
 	cat "${MODELS_BODY}"
 	exit 1
 fi
@@ -124,8 +124,8 @@ with open(sys.argv[1], "r", encoding="utf-8") as f:
 	data = json.load(f)
 
 detail = data.get("detail", "")
-if "LITELLM_API_BASE" not in detail and "LITELLM_BASE_URL" not in detail:
-	raise SystemExit(f"/models error detail did not mention LITELLM_API_BASE or LITELLM_BASE_URL: {detail}")
+if "LITELLM_BASE_URL" not in detail:
+	raise SystemExit(f"/models error detail did not mention LITELLM_BASE_URL: {detail}")
 PY
 
 echo "- Testing POST /run"
