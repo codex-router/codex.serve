@@ -1,10 +1,6 @@
 import os
 import asyncio
 import json
-import ssl
-import urllib.request
-import urllib.error
-import urllib.parse
 from typing import List, Optional, Dict
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
@@ -23,42 +19,23 @@ class RunResponse(BaseModel):
     stderr: str
     exit_code: int
 
-# Configuration for paths (could be env vars)
-CLI_PATHS = {
-    "claude": os.environ.get("CLAUDE_PATH", "claude"),
-    "codex": os.environ.get("CODEX_PATH", "codex"),
-    "gemini": os.environ.get("GEMINI_PATH", "gemini"),
-    "opencode": os.environ.get("OPENCODE_PATH", "opencode"),
-    "qwen": os.environ.get("QWEN_PATH", "qwen"),
-}
+# Supported CLI providers, configurable via env (comma-separated)
+DEFAULT_CLI_LIST = ["codex"]
+CLI_LIST = [
+    cli.strip()
+    for cli in os.environ.get("CLI_LIST", ",".join(DEFAULT_CLI_LIST)).split(",")
+    if cli.strip()
+]
 
 # Optional Docker configuration
 DOCKER_IMAGE = os.environ.get("CODEX_DOCKER_IMAGE")
 
-
-def _join_url(base: str, path: str) -> str:
-    return f"{base.rstrip('/')}/{path.lstrip('/')}"
-
-
-def _build_model_urls(base_url: str) -> List[str]:
-    normalized = base_url.rstrip("/")
-    urls = []
-    path = urllib.parse.urlparse(normalized).path.rstrip("/")
-
-    if normalized.endswith("/models"):
-        urls.append(normalized)
-    elif normalized.endswith("/v1"):
-        urls.append(_join_url(normalized, "/models"))
-    else:
-        urls.append(_join_url(normalized, "/models"))
-        urls.append(_join_url(normalized, "/v1/models"))
-        # Some OpenAI-compatible gateways expose models under /openai/models.
-        if path in ("", "/"):
-            urls.append(_join_url(normalized, "/openai/models"))
-            urls.append(_join_url(normalized, "/openai/v1/models"))
-
-    # Deduplicate while preserving order.
-    return list(dict.fromkeys(urls))
+DEFAULT_MODEL_LIST = []
+MODEL_LIST = [
+    model.strip()
+    for model in os.environ.get("MODEL_LIST", ",".join(DEFAULT_MODEL_LIST)).split(",")
+    if model.strip()
+]
 
 
 def _extract_model_from_args(args: List[str]) -> Optional[str]:
@@ -91,97 +68,17 @@ def _build_docker_env(cli: str, args: List[str], req_env: Optional[Dict[str, str
     return docker_env
 
 
-async def _fetch_litellm_models(url: str, api_key: Optional[str]) -> dict:
-    headers = {
-        "Accept": "application/json",
-        # Use a curl-like signature to avoid stricter anti-bot blocks on some gateways.
-        "User-Agent": os.environ.get("MODEL_FETCH_USER_AGENT", "curl/8.5.0"),
-    }
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-
-    # Optional compatibility mode for providers that require key headers.
-    if os.environ.get("LITELLM_SEND_KEY_HEADERS", "").lower() in ("1", "true", "yes", "on") and api_key:
-        headers["api-key"] = api_key
-        headers["x-api-key"] = api_key
-
-    req = urllib.request.Request(url, headers=headers, method="GET")
-
-    ssl_context = ssl.create_default_context()
-    try:
-        import certifi
-
-        ssl_context = ssl.create_default_context(cafile=certifi.where())
-    except Exception:
-        pass
-
-    def _do_request() -> dict:
-        with urllib.request.urlopen(req, timeout=15, context=ssl_context) as response:
-            body = response.read().decode("utf-8", errors="replace")
-            return json.loads(body)
-
-    return await asyncio.to_thread(_do_request)
-
-
 @app.get("/models")
 async def get_models():
-    base_url = os.environ.get("LITELLM_BASE_URL")
-    api_key = os.environ.get("LITELLM_API_KEY")
-
-    if not base_url:
-        raise HTTPException(
-            status_code=400,
-            detail="Missing LiteLLM base URL. Set LITELLM_BASE_URL."
-        )
-
-    candidate_urls = _build_model_urls(base_url)
-
-    payload = None
-    last_error = None
-    last_http_status = None
-
-    for url in candidate_urls:
-        try:
-            payload = await _fetch_litellm_models(url, api_key)
-            break
-        except urllib.error.HTTPError as err:
-            err_body = err.read().decode("utf-8", errors="replace")
-            last_error = f"HTTP {err.code} from {url}: {err_body}"
-            last_http_status = err.code
-        except urllib.error.URLError as err:
-            last_error = f"Failed to reach {url}: {err.reason}"
-        except json.JSONDecodeError:
-            last_error = f"Invalid JSON from {url}"
-        except Exception as err:
-            last_error = f"Error from {url}: {str(err)}"
-
-    if payload is None:
-        if last_http_status is not None and 400 <= last_http_status < 500:
-            raise HTTPException(status_code=last_http_status, detail=last_error or "Upstream rejected request")
-        raise HTTPException(status_code=502, detail=last_error or "Failed to fetch models")
-
-    raw_models = payload.get("data") if isinstance(payload, dict) else None
-    if not isinstance(raw_models, list):
-        raw_models = payload if isinstance(payload, list) else []
-
-    model_ids = []
-    for item in raw_models:
-        if isinstance(item, dict):
-            model_id = item.get("id")
-            if isinstance(model_id, str) and model_id:
-                model_ids.append(model_id)
-        elif isinstance(item, str):
-            model_ids.append(item)
-
     return {
-        "models": sorted(set(model_ids)),
-        "count": len(set(model_ids)),
+        "models": MODEL_LIST,
+        "count": len(MODEL_LIST),
     }
 
 
 @app.get("/clis")
 async def get_clis():
-    clis = sorted(CLI_PATHS.keys())
+    clis = sorted(set(CLI_LIST))
     return {
         "clis": clis,
         "count": len(clis),
@@ -189,7 +86,7 @@ async def get_clis():
 
 @app.post("/run")
 async def run_cli(req: RunRequest):
-    if req.cli not in CLI_PATHS:
+    if req.cli not in CLI_LIST:
         raise HTTPException(status_code=400, detail=f"Unsupported CLI: {req.cli}")
 
     popen_env = os.environ.copy()
@@ -208,7 +105,7 @@ async def run_cli(req: RunRequest):
         command.extend(req.args)
     else:
         # Run locally
-        executable = CLI_PATHS[req.cli]
+        executable = req.cli
         command = [executable] + req.args
         if req.env:
             popen_env.update(req.env)

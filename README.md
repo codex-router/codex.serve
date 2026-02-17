@@ -1,14 +1,14 @@
 # codex.serve
 
-HTTP server implementation for the Codex Gerrit plugin. This service exposes a REST API to execute supported AI CLIs (Codex, Claude, Gemini, OpenCode, Qwen) remotely, decoupling the execution environment from the Gerrit server.
+HTTP server implementation for the Codex Gerrit plugin. This service exposes a REST API to execute supported AI CLIs remotely, decoupling the execution environment from the Gerrit server.
 
 ## Features
 
 - Exposes a `POST /run` endpoint to execute CLI commands.
-- Exposes a `GET /models` endpoint to fetch available LiteLLM models.
+- Exposes a `GET /models` endpoint to return model IDs from `MODEL_LIST`.
 - Exposes a `GET /clis` endpoint to list supported CLI names.
 - Supports streaming output via newline-delimited JSON (NDJSON).
-- Supports all CLIs used by `codex.gerrit`.
+- Supports a configurable CLI allowlist via `CLI_LIST`.
 - Handles environment variable propagation (e.g., LiteLLM config).
 
 ## Requirements
@@ -38,17 +38,14 @@ This creates the image `craftslab/codex-serve:latest`.
 
 ## Configuration
 
-The server looks for CLI executables in the system PATH by default. You can override specific CLI paths using environment variables:
+The server reads supported CLIs from `CLI_LIST` (comma-separated). In local mode, the selected CLI name is executed directly from `PATH`.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CLAUDE_PATH` | `claude` | Path to Claude CLI |
-| `CODEX_PATH` | `codex` | Path to Codex CLI |
-| `GEMINI_PATH` | `gemini` | Path to Gemini CLI |
-| `OPENCODE_PATH` | `opencode` | Path to OpenCode CLI |
-| `QWEN_PATH` | `qwen` | Path to Qwen CLI |
-| `LITELLM_BASE_URL` | *(unset)* | Default LiteLLM base URL used by `GET /models` |
-| `LITELLM_API_KEY` | *(unset)* | Default LiteLLM API key used by `GET /models` when query param is omitted |
+| `CLI_LIST` | `codex` | Supported CLI names (comma-separated) |
+| `MODEL_LIST` | *(empty)* | Returned model IDs for `GET /models` (comma-separated) |
+| `LITELLM_BASE_URL` | *(unset)* | Passed through to execution container when provided in request env |
+| `LITELLM_API_KEY` | *(unset)* | Passed through to execution container when provided in request env |
 
 ### Docker Mode
 
@@ -65,7 +62,7 @@ When enabled:
 3. `CLI_PROVIDER_NAME` is automatically set from the requested `cli`.
 4. `LITELLM_BASE_URL` is passed through to the execution container when provided.
 5. `LITELLM_MODEL` is inferred from `--model`/`-m` args when not explicitly provided.
-6. The paths configured in `CODEX_PATH` etc. refer to paths *inside* the execution container.
+6. The `cli` value is used as the executable name inside the execution container.
 7. If `codex.serve` itself runs in Docker, mount `/var/run/docker.sock` so it can start sibling containers.
 
 ## Usage
@@ -114,14 +111,9 @@ This test now validates:
 
 ### `GET /models`
 
-Fetches available model IDs from LiteLLM.
+Returns model IDs from `MODEL_LIST`.
 
-The server builds the request URL from `LITELLM_BASE_URL` and supports common base URL shapes (for example base URLs ending in `/v1`, `/models`, or neither).
-
-This endpoint uses environment configuration only:
-
-- `LITELLM_BASE_URL` (required)
-- `LITELLM_API_KEY` (optional)
+If `MODEL_LIST` is unset, the default is an empty list.
 
 **Example:**
 
@@ -133,18 +125,14 @@ curl "http://localhost:8000/models"
 
 ```json
 {
-  "models": ["gpt-4", "claude-3-sonnet"],
-  "count": 2
+  "models": [],
+  "count": 0
 }
 ```
 
-If LiteLLM cannot be reached or returns invalid data, the endpoint returns `502`.
-If LiteLLM returns a `4xx` response (for example auth/config issues), that `4xx` is propagated.
-If `LITELLM_BASE_URL` is unset, it returns `400`.
-
 ### `GET /clis`
 
-Returns the supported CLI names based on the keys in server-side `CLI_PATHS`.
+Returns the supported CLI names from `CLI_LIST`.
 
 **Example:**
 
@@ -156,8 +144,8 @@ curl "http://localhost:8000/clis"
 
 ```json
 {
-  "clis": ["claude", "codex", "gemini", "opencode", "qwen"],
-  "count": 5
+  "clis": ["codex"],
+  "count": 1
 }
 ```
 

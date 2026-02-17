@@ -94,7 +94,7 @@ import sys
 with open(sys.argv[1], "r", encoding="utf-8") as f:
 	data = json.load(f)
 
-expected = {"claude", "codex", "gemini", "opencode", "qwen"}
+expected = {"codex"}
 clis = data.get("clis")
 count = data.get("count")
 
@@ -108,10 +108,10 @@ if count != len(expected):
 	raise SystemExit(f"/clis count mismatch: got {count}, expected {len(expected)}")
 PY
 
-echo "- Testing GET /models (expecting 400 when LITELLM_BASE_URL is unset)"
+echo "- Testing GET /models"
 MODELS_STATUS="$(curl -sS -o "${MODELS_BODY}" -w "%{http_code}" "http://127.0.0.1:${SERVE_PORT}/models")"
-if [ "${MODELS_STATUS}" != "400" ]; then
-	echo "Expected HTTP 400 from /models when LITELLM_BASE_URL is unset, got ${MODELS_STATUS}"
+if [ "${MODELS_STATUS}" != "200" ]; then
+	echo "Expected HTTP 200 from /models, got ${MODELS_STATUS}"
 	cat "${MODELS_BODY}"
 	exit 1
 fi
@@ -123,9 +123,19 @@ import sys
 with open(sys.argv[1], "r", encoding="utf-8") as f:
 	data = json.load(f)
 
-detail = data.get("detail", "")
-if "LITELLM_BASE_URL" not in detail:
-	raise SystemExit(f"/models error detail did not mention LITELLM_BASE_URL: {detail}")
+expected = set()
+
+models = data.get("models")
+count = data.get("count")
+
+if not isinstance(models, list):
+	raise SystemExit("/models response missing list field 'models'")
+
+if set(models) != expected:
+	raise SystemExit(f"/models response mismatch: got {models}")
+
+if count != len(expected):
+	raise SystemExit(f"/models count mismatch: got {count}, expected {len(expected)}")
 PY
 
 echo "- Testing POST /run"
