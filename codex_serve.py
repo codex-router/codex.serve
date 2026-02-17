@@ -94,11 +94,14 @@ def _build_docker_env(cli: str, args: List[str], req_env: Optional[Dict[str, str
 async def _fetch_litellm_models(url: str, api_key: Optional[str]) -> dict:
     headers = {
         "Accept": "application/json",
-        "User-Agent": "codex-serve/1.0",
+        # Use a curl-like signature to avoid stricter anti-bot blocks on some gateways.
+        "User-Agent": os.environ.get("MODEL_FETCH_USER_AGENT", "curl/8.5.0"),
     }
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-        # Keep compatibility with providers that expect these key headers.
+
+    # Optional compatibility mode for providers that require key headers.
+    if os.environ.get("LITELLM_SEND_KEY_HEADERS", "").lower() in ("1", "true", "yes", "on") and api_key:
         headers["api-key"] = api_key
         headers["x-api-key"] = api_key
 
