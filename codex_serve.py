@@ -1,6 +1,7 @@
 import os
 import asyncio
 import json
+import codecs
 from typing import List, Optional, Dict
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
@@ -134,11 +135,28 @@ async def run_cli(req: RunRequest):
             queue = asyncio.Queue()
 
             async def read_stream(stream, type_label):
+                decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+                buffer = ""
+
                 while True:
                     chunk = await stream.read(4096)
                     if not chunk:
                         break
-                    await queue.put({"type": type_label, "data": chunk.decode('utf-8', errors='replace')})
+
+                    buffer += decoder.decode(chunk)
+
+                    while True:
+                        newline_index = buffer.find("\n")
+                        if newline_index == -1:
+                            break
+                        line = buffer[: newline_index + 1]
+                        buffer = buffer[newline_index + 1 :]
+                        await queue.put({"type": type_label, "data": line})
+
+                buffer += decoder.decode(b"", final=True)
+                if buffer:
+                    await queue.put({"type": type_label, "data": buffer})
+
                 # Signal this stream is done
                 await queue.put(None)
 
