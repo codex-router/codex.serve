@@ -49,15 +49,19 @@ def _extract_model_from_args(args: List[str]) -> Optional[str]:
 
 
 def _build_docker_env(cli: str, args: List[str], req_env: Optional[Dict[str, str]]) -> Dict[str, str]:
-    docker_env = dict(req_env or {})
+    docker_env: Dict[str, str] = {}
+
+    # Default LiteLLM settings from codex.serve runtime env (e.g., docker-compose).
+    for env_key in ("LITELLM_BASE_URL", "LITELLM_API_KEY"):
+        env_val = os.environ.get(env_key)
+        if env_val:
+            docker_env[env_key] = env_val
+
+    # Request env can optionally override defaults.
+    docker_env.update(req_env or {})
 
     # Required by codex.docker entrypoint for provider-specific env mapping.
     docker_env["CLI_PROVIDER_NAME"] = cli
-
-    # Use only LITELLM_BASE_URL for base URL configuration.
-    base_url = docker_env.get("LITELLM_BASE_URL")
-    if base_url:
-        docker_env["LITELLM_BASE_URL"] = base_url
 
     # If no explicit model env provided, infer from common CLI flags.
     if not docker_env.get("LITELLM_MODEL"):

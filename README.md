@@ -44,8 +44,8 @@ The server reads supported CLIs from `CLI_LIST` (comma-separated). In local mode
 |----------|---------|-------------|
 | `CLI_LIST` | `codex` | Supported CLI names (comma-separated) |
 | `MODEL_LIST` | *(empty)* | Returned model IDs for `GET /models` (comma-separated) |
-| `LITELLM_BASE_URL` | *(unset)* | Passed through to execution container when provided in request env |
-| `LITELLM_API_KEY` | *(unset)* | Passed through to execution container when provided in request env |
+| `LITELLM_BASE_URL` | *(unset)* | Default LiteLLM base URL passed to execution container in Docker mode |
+| `LITELLM_API_KEY` | *(unset)* | Default LiteLLM API key passed to execution container in Docker mode |
 
 ### Docker Mode
 
@@ -58,9 +58,9 @@ python codex_serve.py
 
 When enabled:
 1. `codex.serve` calls `docker run --rm -i ...` for every request.
-2. Environment variables from the request (like `LITELLM_API_KEY`) are passed via `-e` flags.
+2. `LITELLM_BASE_URL` and `LITELLM_API_KEY` are inherited from `codex.serve` runtime env and passed via `-e` flags.
 3. `CLI_PROVIDER_NAME` is automatically set from the requested `cli`.
-4. `LITELLM_BASE_URL` is passed through to the execution container when provided.
+4. Request `env` values are optional and can override inherited defaults.
 5. `LITELLM_MODEL` is inferred from `--model`/`-m` args when not explicitly provided.
 6. The `cli` value is used as the executable name inside the execution container.
 7. If `codex.serve` itself runs in Docker, mount `/var/run/docker.sock` so it can start sibling containers.
@@ -159,12 +159,11 @@ Executes a CLI command.
 {
   "cli": "codex",
   "args": ["--model", "gpt-4"],
-  "stdin": "Prompt text...",
-  "env": {
-    "LITELLM_BASE_URL": "..."
-  }
+  "stdin": "Prompt text..."
 }
 ```
+
+`env` is optional. In Docker mode, `LITELLM_BASE_URL` and `LITELLM_API_KEY` are read from `codex.serve` process env by default.
 
 **Response:**
 
