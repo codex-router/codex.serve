@@ -1,6 +1,6 @@
 services:
   codex-serve:
-    build: .
+    image: craftslab/codex-serve:latest
     ports:
       - "8000:8000"
     volumes:
