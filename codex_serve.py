@@ -31,12 +31,30 @@ CLI_LIST = [
 # Optional Docker configuration
 DOCKER_IMAGE = os.environ.get("CODEX_DOCKER_IMAGE")
 
-DEFAULT_MODEL_LIST = []
+DEFAULT_MODEL_LIST = ["auto"]
 MODEL_LIST = [
     model.strip()
     for model in os.environ.get("MODEL_LIST", ",".join(DEFAULT_MODEL_LIST)).split(",")
     if model.strip()
 ]
+
+
+def _resolve_auto_model(model: Optional[str]) -> Optional[str]:
+    if model is None:
+        return None
+
+    normalized = model.strip()
+    if not normalized:
+        return None
+
+    if normalized.lower() != "auto":
+        return normalized
+
+    for candidate in MODEL_LIST:
+        if candidate.strip().lower() != "auto":
+            return candidate
+
+    return None
 
 
 def _parse_response_timeout_seconds(value: Optional[str]) -> Optional[float]:
@@ -103,9 +121,15 @@ def _build_docker_env(cli: str, args: List[str], req_env: Optional[Dict[str, str
     # Required by codex.docker entrypoint for provider-specific env mapping.
     docker_env["CLI_PROVIDER_NAME"] = cli
 
+    configured_model = _resolve_auto_model(docker_env.get("LITELLM_MODEL"))
+    if configured_model:
+        docker_env["LITELLM_MODEL"] = configured_model
+    elif docker_env.get("LITELLM_MODEL"):
+        docker_env.pop("LITELLM_MODEL", None)
+
     # If no explicit model env provided, infer from common CLI flags.
     if not docker_env.get("LITELLM_MODEL"):
-        inferred_model = _extract_model_from_args(args)
+        inferred_model = _resolve_auto_model(_extract_model_from_args(args))
         if inferred_model:
             docker_env["LITELLM_MODEL"] = inferred_model
 
