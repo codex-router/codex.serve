@@ -3,6 +3,7 @@ import asyncio
 import json
 import codecs
 from typing import List, Optional, Dict
+from uuid import uuid4
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -14,6 +15,7 @@ class RunRequest(BaseModel):
     args: List[str]
     stdin: str
     env: Optional[Dict[str, str]] = None
+    session_id: Optional[str] = None
 
 class RunResponse(BaseModel):
     stdout: str
@@ -37,6 +39,10 @@ MODEL_LIST = [
     for model in os.environ.get("MODEL_LIST", ",".join(DEFAULT_MODEL_LIST)).split(",")
     if model.strip()
 ]
+
+RUN_SESSIONS: Dict[str, asyncio.subprocess.Process] = {}
+STOP_REQUESTED_SESSIONS = set()
+SESSIONS_LOCK = asyncio.Lock()
 
 
 def _resolve_auto_model(model: Optional[str]) -> Optional[str]:
@@ -162,6 +168,40 @@ async def _await_with_deadline(coro, deadline: Optional[float]):
     return await asyncio.wait_for(coro, timeout=remaining)
 
 
+async def _register_session(session_id: str, process: asyncio.subprocess.Process) -> None:
+    async with SESSIONS_LOCK:
+        RUN_SESSIONS[session_id] = process
+
+
+async def _unregister_session(session_id: str, process: Optional[asyncio.subprocess.Process]) -> None:
+    async with SESSIONS_LOCK:
+        current = RUN_SESSIONS.get(session_id)
+        if process is None or current is process:
+            RUN_SESSIONS.pop(session_id, None)
+        STOP_REQUESTED_SESSIONS.discard(session_id)
+
+
+async def _mark_stop_requested(session_id: str) -> None:
+    async with SESSIONS_LOCK:
+        STOP_REQUESTED_SESSIONS.add(session_id)
+
+
+async def _consume_stop_requested(session_id: str) -> bool:
+    async with SESSIONS_LOCK:
+        if session_id in STOP_REQUESTED_SESSIONS:
+            STOP_REQUESTED_SESSIONS.remove(session_id)
+            return True
+        return False
+
+
+async def _get_active_session_process(session_id: str) -> Optional[asyncio.subprocess.Process]:
+    async with SESSIONS_LOCK:
+        process = RUN_SESSIONS.get(session_id)
+        if process is None or process.returncode is not None:
+            return None
+        return process
+
+
 @app.get("/models")
 async def get_models():
     return {
@@ -178,10 +218,36 @@ async def get_clis():
         "count": len(clis),
     }
 
+
+@app.post("/sessions/{session_id}/stop")
+async def stop_session(session_id: str):
+    normalized_session_id = session_id.strip()
+    if not normalized_session_id:
+        raise HTTPException(status_code=400, detail="session_id cannot be empty")
+
+    process = await _get_active_session_process(normalized_session_id)
+    if process is None:
+        raise HTTPException(status_code=404, detail=f"Session not found or already finished: {normalized_session_id}")
+
+    await _mark_stop_requested(normalized_session_id)
+    await _terminate_process(process)
+    return {
+        "session_id": normalized_session_id,
+        "status": "stopped",
+    }
+
 @app.post("/run")
 async def run_cli(req: RunRequest):
     if req.cli not in CLI_LIST:
         raise HTTPException(status_code=400, detail=f"Unsupported CLI: {req.cli}")
+
+    session_id = req.session_id.strip() if req.session_id else str(uuid4())
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id cannot be empty")
+
+    existing_process = await _get_active_session_process(session_id)
+    if existing_process is not None:
+        raise HTTPException(status_code=409, detail=f"Session is already running: {session_id}")
 
     popen_env = os.environ.copy()
 
@@ -215,6 +281,8 @@ async def run_cli(req: RunRequest):
         read_tasks = []
         process = None
         try:
+            yield json.dumps({"type": "session", "id": session_id}) + "\n"
+
             process = await asyncio.create_subprocess_exec(
                 *command,
                 stdin=asyncio.subprocess.PIPE,
@@ -222,6 +290,7 @@ async def run_cli(req: RunRequest):
                 stderr=asyncio.subprocess.PIPE,
                 env=popen_env
             )
+            await _register_session(session_id, process)
 
             # Write stdin
             if req.stdin:
@@ -277,6 +346,8 @@ async def run_cli(req: RunRequest):
                     yield json.dumps(item) + "\n"
 
             exit_code = await _await_with_deadline(process.wait(), deadline)
+            if await _consume_stop_requested(session_id):
+                yield json.dumps({"type": "stderr", "data": "Session stopped via API.\n"}) + "\n"
             yield json.dumps({"type": "exit", "code": exit_code}) + "\n"
 
         except asyncio.TimeoutError:
@@ -300,6 +371,7 @@ async def run_cli(req: RunRequest):
                     task.cancel()
             if read_tasks:
                 await asyncio.gather(*read_tasks, return_exceptions=True)
+            await _unregister_session(session_id, process)
 
     return StreamingResponse(stream_generator(), media_type="application/x-ndjson")
 

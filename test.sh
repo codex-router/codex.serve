@@ -54,6 +54,7 @@ docker run -d \
 	--name "${SERVE_CONTAINER_NAME}" \
 	-p "${SERVE_PORT}:8000" \
 	-v /var/run/docker.sock:/var/run/docker.sock \
+	-e CLI_LIST="codex,bash" \
 	-e CODEX_DOCKER_IMAGE="${CLI_IMAGE_TAG}" \
 	-e RUN_RESPONSE_TIMEOUT_SECONDS="60" \
 	-e LITELLM_BASE_URL="http://litellm.test.local" \
@@ -97,7 +98,7 @@ import sys
 with open(sys.argv[1], "r", encoding="utf-8") as f:
 	data = json.load(f)
 
-expected = {"codex"}
+expected = {"bash", "codex"}
 clis = data.get("clis")
 count = data.get("count")
 
@@ -145,7 +146,7 @@ echo "- Testing POST /run"
 curl -sS -N -o "${RUN_BODY}" \
 	-X POST "http://127.0.0.1:${SERVE_PORT}/run" \
 	-H "Content-Type: application/json" \
-	-d '{"cli":"codex","args":["--version"],"stdin":""}'
+	-d '{"cli":"codex","args":["--version"],"stdin":"","session_id":"smoke-run-session"}'
 
 python3 - "${RUN_BODY}" <<'PY'
 import json
@@ -164,6 +165,17 @@ with open(path, "r", encoding="utf-8") as f:
 if not events:
 	raise SystemExit("/run returned no NDJSON events")
 
+session_events = [e for e in events if e.get("type") == "session"]
+if not session_events:
+	raise SystemExit("/run response missing session event")
+
+session_id = session_events[0].get("id")
+if not isinstance(session_id, str) or not session_id:
+	raise SystemExit(f"/run session id is invalid: {session_id}")
+
+if session_id != "smoke-run-session":
+	raise SystemExit(f"/run session id mismatch: got {session_id}")
+
 exit_events = [e for e in events if e.get("type") == "exit"]
 if not exit_events:
 	raise SystemExit("/run response missing exit event")
@@ -171,6 +183,67 @@ if not exit_events:
 exit_code = exit_events[-1].get("code")
 if not isinstance(exit_code, int):
 	raise SystemExit(f"/run exit code is not an integer: {exit_code}")
+PY
+
+echo "- Testing POST /sessions/{session_id}/stop"
+STOP_RUN_BODY="${TMP_DIR}/stop-run.ndjson"
+STOP_RESP_BODY="${TMP_DIR}/stop-response.json"
+
+curl -sS -N -o "${STOP_RUN_BODY}" \
+	-X POST "http://127.0.0.1:${SERVE_PORT}/run" \
+	-H "Content-Type: application/json" \
+	-d '{"cli":"bash","args":["-lc","sleep 30"],"stdin":"","session_id":"stop-me"}' &
+RUN_PID=$!
+
+sleep 1
+
+STOP_STATUS="$(curl -sS -o "${STOP_RESP_BODY}" -w "%{http_code}" -X POST "http://127.0.0.1:${SERVE_PORT}/sessions/stop-me/stop")"
+if [ "${STOP_STATUS}" != "200" ]; then
+	echo "Expected HTTP 200 from /sessions/stop-me/stop, got ${STOP_STATUS}"
+	cat "${STOP_RESP_BODY}"
+	kill "${RUN_PID}" >/dev/null 2>&1 || true
+	exit 1
+fi
+
+wait "${RUN_PID}"
+
+python3 - "${STOP_RESP_BODY}" "${STOP_RUN_BODY}" <<'PY'
+import json
+import sys
+
+stop_response_path = sys.argv[1]
+stop_run_path = sys.argv[2]
+
+with open(stop_response_path, "r", encoding="utf-8") as f:
+	stop_data = json.load(f)
+
+if stop_data.get("session_id") != "stop-me":
+	raise SystemExit(f"/sessions stop session_id mismatch: {stop_data}")
+
+if stop_data.get("status") != "stopped":
+	raise SystemExit(f"/sessions stop status mismatch: {stop_data}")
+
+events = []
+with open(stop_run_path, "r", encoding="utf-8") as f:
+	for line in f:
+		line = line.strip()
+		if not line:
+			continue
+		events.append(json.loads(line))
+
+if not events:
+	raise SystemExit("stop-session /run returned no NDJSON events")
+
+session_events = [e for e in events if e.get("type") == "session"]
+if not session_events or session_events[0].get("id") != "stop-me":
+	raise SystemExit(f"stop-session run missing expected session event: {session_events}")
+
+exit_events = [e for e in events if e.get("type") == "exit"]
+if not exit_events:
+	raise SystemExit("stop-session run missing exit event")
+
+if not isinstance(exit_events[-1].get("code"), int):
+	raise SystemExit(f"stop-session run exit code is invalid: {exit_events[-1]}")
 PY
 
 rm -rf "${TMP_DIR}"
