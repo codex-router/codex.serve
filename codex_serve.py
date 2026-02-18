@@ -39,6 +39,26 @@ MODEL_LIST = [
 ]
 
 
+def _parse_response_timeout_seconds(value: Optional[str]) -> Optional[float]:
+    if value is None:
+        return None
+    normalized = value.strip()
+    if not normalized:
+        return None
+    try:
+        timeout_seconds = float(normalized)
+    except ValueError:
+        return None
+    if timeout_seconds <= 0:
+        return None
+    return timeout_seconds
+
+
+RESPONSE_TIMEOUT_SECONDS = _parse_response_timeout_seconds(
+    os.environ.get("RUN_RESPONSE_TIMEOUT_SECONDS")
+)
+
+
 def _extract_model_from_args(args: List[str]) -> Optional[str]:
     for idx, arg in enumerate(args):
         if arg in ("--model", "-m"):
@@ -92,6 +112,32 @@ def _build_docker_env(cli: str, args: List[str], req_env: Optional[Dict[str, str
     return docker_env
 
 
+async def _terminate_process(process: asyncio.subprocess.Process) -> None:
+    if process.returncode is not None:
+        return
+
+    process.terminate()
+    try:
+        await asyncio.wait_for(process.wait(), timeout=2)
+        return
+    except asyncio.TimeoutError:
+        pass
+
+    process.kill()
+    await process.wait()
+
+
+async def _await_with_deadline(coro, deadline: Optional[float]):
+    if deadline is None:
+        return await coro
+
+    remaining = deadline - asyncio.get_running_loop().time()
+    if remaining <= 0:
+        raise asyncio.TimeoutError()
+
+    return await asyncio.wait_for(coro, timeout=remaining)
+
+
 @app.get("/models")
 async def get_models():
     return {
@@ -142,6 +188,8 @@ async def run_cli(req: RunRequest):
             popen_env.update(req.env)
 
     async def stream_generator():
+        read_tasks = []
+        process = None
         try:
             process = await asyncio.create_subprocess_exec(
                 *command,
@@ -187,24 +235,47 @@ async def run_cli(req: RunRequest):
                 await queue.put(None)
 
             # Start reading tasks
-            asyncio.create_task(read_stream(process.stdout, "stdout"))
-            asyncio.create_task(read_stream(process.stderr, "stderr"))
+            read_tasks = [
+                asyncio.create_task(read_stream(process.stdout, "stdout")),
+                asyncio.create_task(read_stream(process.stderr, "stderr")),
+            ]
+
+            deadline = None
+            if RESPONSE_TIMEOUT_SECONDS is not None:
+                deadline = asyncio.get_running_loop().time() + RESPONSE_TIMEOUT_SECONDS
 
             active_streams = 2
             while active_streams > 0:
-                item = await queue.get()
+                item = await _await_with_deadline(queue.get(), deadline)
                 if item is None:
                     active_streams -= 1
                 else:
                     yield json.dumps(item) + "\n"
 
-            exit_code = await process.wait()
+            exit_code = await _await_with_deadline(process.wait(), deadline)
             yield json.dumps({"type": "exit", "code": exit_code}) + "\n"
+
+        except asyncio.TimeoutError:
+            if process is not None:
+                await _terminate_process(process)
+            timeout_msg = (
+                "Request timed out while waiting for CLI response "
+                f"({RESPONSE_TIMEOUT_SECONDS}s)."
+            )
+            yield json.dumps({"type": "stderr", "data": timeout_msg}) + "\n"
+            yield json.dumps({"type": "exit", "code": 124}) + "\n"
 
         except Exception as e:
             error_data = {"type": "stderr", "data": f"Internal Server Error: {str(e)}"}
             yield json.dumps(error_data) + "\n"
             yield json.dumps({"type": "exit", "code": 1}) + "\n"
+
+        finally:
+            for task in read_tasks:
+                if not task.done():
+                    task.cancel()
+            if read_tasks:
+                await asyncio.gather(*read_tasks, return_exceptions=True)
 
     return StreamingResponse(stream_generator(), media_type="application/x-ndjson")
 

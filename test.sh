@@ -55,6 +55,7 @@ docker run -d \
 	-p "${SERVE_PORT}:8000" \
 	-v /var/run/docker.sock:/var/run/docker.sock \
 	-e CODEX_DOCKER_IMAGE="${CLI_IMAGE_TAG}" \
+	-e RUN_RESPONSE_TIMEOUT_SECONDS="60" \
 	-e LITELLM_BASE_URL="http://litellm.test.local" \
 	-e LITELLM_API_KEY="test-api-key" \
 	"${SERVE_IMAGE_TAG}" >/dev/null

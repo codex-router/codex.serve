@@ -46,6 +46,7 @@ The server reads supported CLIs from `CLI_LIST` (comma-separated). In local mode
 | `MODEL_LIST` | *(empty)* | Returned model IDs for `GET /models` (comma-separated) |
 | `LITELLM_BASE_URL` | *(unset)* | Default LiteLLM base URL passed to execution container in Docker mode |
 | `LITELLM_API_KEY` | *(unset)* | Default LiteLLM API key passed to execution container in Docker mode |
+| `RUN_RESPONSE_TIMEOUT_SECONDS` | *(unset)* | Optional timeout (seconds) for `POST /run`; `<= 0`, empty, or invalid disables timeout |
 
 ### Docker Mode
 
@@ -92,6 +93,7 @@ This configuration:
 - Builds/Runs `codex.serve` (defined in `Dockerfile`) which has the Docker client installed.
 - Mounts the host's Docker socket (`/var/run/docker.sock`) so it can spawn sibling containers.
 - Configures `CODEX_DOCKER_IMAGE` to `craftslab/codex-cli-env:latest` for executing CLIs safely. The server container will spawn this image for each request.
+- Sets `RUN_RESPONSE_TIMEOUT_SECONDS` in [docker-compose.yml](docker-compose.yml) (default `300`) to bound `POST /run` response time in container deployments.
 
 See [docker-compose.yml](docker-compose.yml) for details.
 
@@ -174,4 +176,11 @@ The response is a stream of newline-delimited JSON objects (NDJSON).
 {"type": "stderr", "data": "log message..."}
 {"type": "stdout", "data": "more output..."}
 {"type": "exit", "code": 0}
+```
+
+If `RUN_RESPONSE_TIMEOUT_SECONDS` is configured and the timeout is reached before the process completes, the stream ends with:
+
+```json
+{"type": "stderr", "data": "Request timed out while waiting for CLI response (...s)."}
+{"type": "exit", "code": 124}
 ```

@@ -16,3 +16,5 @@ services:
       # LiteLLM endpoint and credentials
       - LITELLM_BASE_URL=${LITELLM_BASE_URL}
       - LITELLM_API_KEY=${LITELLM_API_KEY}
+      # /run response timeout in seconds (0 or empty disables timeout)
+      - RUN_RESPONSE_TIMEOUT_SECONDS=${RUN_RESPONSE_TIMEOUT_SECONDS:-300}
