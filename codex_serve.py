@@ -286,28 +286,35 @@ async def run_agent(req: RunRequest):
             async def read_stream(stream, type_label):
                 decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
                 buffer = ""
-
-                while True:
-                    chunk = await stream.read(4096)
-                    if not chunk:
-                        break
-
-                    buffer += decoder.decode(chunk)
-
+                try:
                     while True:
-                        newline_index = buffer.find("\n")
-                        if newline_index == -1:
+                        chunk = await stream.read(4096)
+                        if not chunk:
                             break
-                        line = buffer[: newline_index + 1]
-                        buffer = buffer[newline_index + 1 :]
-                        await queue.put({"type": type_label, "data": line})
 
-                buffer += decoder.decode(b"", final=True)
-                if buffer:
-                    await queue.put({"type": type_label, "data": buffer})
+                        buffer += decoder.decode(chunk)
 
-                # Signal this stream is done
-                await queue.put(None)
+                        while True:
+                            newline_index = buffer.find("\n")
+                            if newline_index == -1:
+                                break
+                            line = buffer[: newline_index + 1]
+                            buffer = buffer[newline_index + 1 :]
+                            await queue.put({"type": type_label, "data": line})
+
+                    buffer += decoder.decode(b"", final=True)
+                    if buffer:
+                        await queue.put({"type": type_label, "data": buffer})
+                except Exception as stream_error:
+                    await queue.put(
+                        {
+                            "type": "stderr",
+                            "data": f"{type_label} stream read failed: {str(stream_error)}\n",
+                        }
+                    )
+                finally:
+                    # Always signal completion so active_streams cannot hang forever.
+                    await queue.put(None)
 
             # Start reading tasks
             read_tasks = [
