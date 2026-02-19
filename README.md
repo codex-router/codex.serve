@@ -1,15 +1,15 @@
 # codex.serve
 
-HTTP server implementation for the Codex Gerrit plugin. This service exposes a REST API to execute supported AI CLIs remotely, decoupling the execution environment from the Gerrit server.
+HTTP server implementation for the Codex Gerrit plugin. This service exposes a REST API to execute supported AI agents remotely, decoupling the execution environment from the Gerrit server.
 
 ## Features
 
-- Exposes a `POST /run` endpoint to execute CLI commands.
+- Exposes a `POST /run` endpoint to execute agent commands.
 - Exposes a `POST /sessions/{sessionId}/stop` endpoint to stop an active `/run` session.
 - Exposes a `GET /models` endpoint to return model IDs from `MODEL_LIST`.
-- Exposes a `GET /clis` endpoint to list supported CLI names.
+- Exposes a `GET /agents` endpoint to list supported agent names.
 - Supports streaming output via newline-delimited JSON (NDJSON).
-- Supports a configurable CLI allowlist via `CLI_LIST`.
+- Supports a configurable agent allowlist via `AGENT_LIST`.
 - Handles environment variable propagation (e.g., LiteLLM config).
 
 ## Requirements
@@ -39,11 +39,11 @@ This creates the image `craftslab/codex-serve:latest`.
 
 ## Configuration
 
-The server reads supported CLIs from `CLI_LIST` (comma-separated). In local mode, the selected CLI name is executed directly from `PATH`.
+The server reads supported agents from `AGENT_LIST` (comma-separated). In local mode, the selected agent name is executed directly from `PATH`.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CLI_LIST` | `codex` | Supported CLI names (comma-separated) |
+| `AGENT_LIST` | `codex` | Supported agent names (comma-separated) |
 | `MODEL_LIST` | *(empty)* | Returned model IDs for `GET /models` (comma-separated) |
 | `LITELLM_BASE_URL` | *(unset)* | Default LiteLLM base URL passed to execution container in Docker mode |
 | `LITELLM_API_KEY` | *(unset)* | Default LiteLLM API key passed to execution container in Docker mode |
@@ -51,20 +51,20 @@ The server reads supported CLIs from `CLI_LIST` (comma-separated). In local mode
 
 ### Docker Mode
 
-To run the CLIs inside a Docker container (e.g. built from `codex.docker/Dockerfile`), set the `CODEX_DOCKER_IMAGE` environment variable.
+To run the agents inside a Docker container (e.g. built from `codex.agent/Dockerfile`), set the `CODEX_AGENT_IMAGE` environment variable.
 
 ```bash
-export CODEX_DOCKER_IMAGE=my-codex-image:latest
+export CODEX_AGENT_IMAGE=my-codex-image:latest
 python codex_serve.py
 ```
 
 When enabled:
 1. `codex.serve` calls `docker run --rm -i ...` for every request.
 2. `LITELLM_BASE_URL` and `LITELLM_API_KEY` are inherited from `codex.serve` runtime env and passed via `-e` flags.
-3. `CLI_PROVIDER_NAME` is automatically set from the requested `cli`.
+3. `AGENT_PROVIDER_NAME` is automatically set from the requested `agent`.
 4. Request `env` values are optional and can override inherited defaults.
 5. `LITELLM_MODEL` is inferred from `--model`/`-m` args when not explicitly provided.
-6. The `cli` value is used as the executable name inside the execution container.
+6. The `agent` value is used as the executable name inside the execution container.
 7. If `codex.serve` itself runs in Docker, mount `/var/run/docker.sock` so it can start sibling containers.
 
 ## Usage
@@ -81,9 +81,9 @@ The server will start on `http://0.0.0.0:8000`.
 
 ### Run with Docker Compose (Recommended)
 
-To run `codex.serve` in a container while orchestrating the AI CLI environment, use Docker Compose. This setup uses the "Sibling Containers" pattern, allowing the verified server container to spawn execution containers on the host Docker daemon.
+To run `codex.serve` in a container while orchestrating the AI agent environment, use Docker Compose. This setup uses the "Sibling Containers" pattern, allowing the verified server container to spawn execution containers on the host Docker daemon.
 
-1.  Build the CLI environment image (see `codex.docker/README.md`).
+1.  Build the agent environment image (see `codex.agent/README.md`).
 2.  Start the service:
 
 ```bash
@@ -93,22 +93,22 @@ docker-compose up --build
 This configuration:
 - Builds/Runs `codex.serve` (defined in `Dockerfile`) which has the Docker client installed.
 - Mounts the host's Docker socket (`/var/run/docker.sock`) so it can spawn sibling containers.
-- Configures `CODEX_DOCKER_IMAGE` to `craftslab/codex-cli-env:latest` for executing CLIs safely. The server container will spawn this image for each request.
+- Configures `CODEX_AGENT_IMAGE` to `craftslab/codex-agent:latest` for executing agents safely. The server container will spawn this image for each request.
 - Sets `RUN_RESPONSE_TIMEOUT_SECONDS` in [docker-compose.yml](docker-compose.yml) (default `300`) to bound `POST /run` response time in container deployments.
 
 See [docker-compose.yml](docker-compose.yml) for details.
 
 ### Smoke Test (Docker Mode)
 
-To verify Docker mode end-to-end (including `CODEX_DOCKER_IMAGE`), run:
+To verify Docker mode end-to-end (including `CODEX_AGENT_IMAGE`), run:
 
 ```bash
 ./test.sh
 ```
 
 This test now validates:
-- The CLI image built from `codex.docker/Dockerfile` is Ubuntu-based and all supported CLIs are callable.
-- A `codex.serve` container built from this module's `Dockerfile` can execute `POST /run` requests by launching the configured `CODEX_DOCKER_IMAGE`.
+- The agent image built from `codex.agent/Dockerfile` is Ubuntu-based and all supported agents are callable.
+- A `codex.serve` container built from this module's `Dockerfile` can execute `POST /run` requests by launching the configured `CODEX_AGENT_IMAGE`.
 
 ## API
 
@@ -133,34 +133,34 @@ curl "http://localhost:8000/models"
 }
 ```
 
-### `GET /clis`
+### `GET /agents`
 
-Returns the supported CLI names from `CLI_LIST`.
+Returns the supported agent names from `AGENT_LIST`.
 
 **Example:**
 
 ```bash
-curl "http://localhost:8000/clis"
+curl "http://localhost:8000/agents"
 ```
 
 **Response:**
 
 ```json
 {
-  "clis": ["codex"],
+  "agents": ["codex"],
   "count": 1
 }
 ```
 
 ### `POST /run`
 
-Executes a CLI command.
+Executes a agent command.
 
 **Request Body:**
 
 ```json
 {
-  "cli": "codex",
+  "agent": "codex",
   "args": ["--model", "gpt-4"],
   "stdin": "Prompt text...",
   "sessionId": "optional-client-session-id"
@@ -210,6 +210,6 @@ If the session does not exist or has already finished, this endpoint returns `40
 If `RUN_RESPONSE_TIMEOUT_SECONDS` is configured and the timeout is reached before the process completes, the stream ends with:
 
 ```json
-{"type": "stderr", "data": "Request timed out while waiting for CLI response (...s)."}
+{"type": "stderr", "data": "Request timed out while waiting for agent response (...s)."}
 {"type": "exit", "code": 124}
 ```

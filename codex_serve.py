@@ -11,7 +11,7 @@ from pydantic import BaseModel
 app = FastAPI()
 
 class RunRequest(BaseModel):
-    cli: str
+    agent: str
     args: List[str]
     stdin: str
     env: Optional[Dict[str, str]] = None
@@ -22,16 +22,16 @@ class RunResponse(BaseModel):
     stderr: str
     exit_code: int
 
-# Supported CLI providers, configurable via env (comma-separated)
-DEFAULT_CLI_LIST = ["codex"]
-CLI_LIST = [
-    cli.strip()
-    for cli in os.environ.get("CLI_LIST", ",".join(DEFAULT_CLI_LIST)).split(",")
-    if cli.strip()
+# Supported agent providers, configurable via env (comma-separated)
+DEFAULT_AGENT_LIST = ["codex"]
+AGENT_LIST = [
+    agent.strip()
+    for agent in os.environ.get("AGENT_LIST", ",".join(DEFAULT_AGENT_LIST)).split(",")
+    if agent.strip()
 ]
 
 # Optional Docker configuration
-DOCKER_IMAGE = os.environ.get("CODEX_DOCKER_IMAGE")
+DOCKER_IMAGE = os.environ.get("CODEX_AGENT_IMAGE")
 
 DEFAULT_MODEL_LIST = []
 MODEL_LIST = [
@@ -94,7 +94,7 @@ def _strip_model_args(args: List[str]) -> List[str]:
     return normalized_args
 
 
-def _build_docker_env(cli: str, args: List[str], req_env: Optional[Dict[str, str]]) -> Dict[str, str]:
+def _build_docker_env(agent: str, args: List[str], req_env: Optional[Dict[str, str]]) -> Dict[str, str]:
     docker_env: Dict[str, str] = {}
 
     # Default LiteLLM settings from codex.serve runtime env (e.g., docker-compose).
@@ -106,8 +106,8 @@ def _build_docker_env(cli: str, args: List[str], req_env: Optional[Dict[str, str
     # Request env can optionally override defaults.
     docker_env.update(req_env or {})
 
-    # Required by codex.docker entrypoint for provider-specific env mapping.
-    docker_env["CLI_PROVIDER_NAME"] = cli
+    # Required by codex.agent entrypoint for provider-specific env mapping.
+    docker_env["AGENT_PROVIDER_NAME"] = agent
 
     configured_model = (docker_env.get("LITELLM_MODEL") or "").strip() or None
     if configured_model:
@@ -115,7 +115,7 @@ def _build_docker_env(cli: str, args: List[str], req_env: Optional[Dict[str, str
     elif docker_env.get("LITELLM_MODEL") is not None:
         docker_env.pop("LITELLM_MODEL", None)
 
-    # If no explicit model env provided, infer from common CLI flags.
+    # If no explicit model env provided, infer from common agent flags.
     if not docker_env.get("LITELLM_MODEL"):
         inferred_model = (_extract_model_from_args(args) or "").strip() or None
         if inferred_model:
@@ -192,12 +192,12 @@ async def get_models():
     }
 
 
-@app.get("/clis")
-async def get_clis():
-    clis = sorted(set(CLI_LIST))
+@app.get("/agents")
+async def get_agents():
+    agents = sorted(set(AGENT_LIST))
     return {
-        "clis": clis,
-        "count": len(clis),
+        "agents": agents,
+        "count": len(agents),
     }
 
 
@@ -219,9 +219,9 @@ async def stop_session(sessionId: str):
     }
 
 @app.post("/run")
-async def run_cli(req: RunRequest):
-    if req.cli not in CLI_LIST:
-        raise HTTPException(status_code=400, detail=f"Unsupported CLI: {req.cli}")
+async def run_agent(req: RunRequest):
+    if req.agent not in AGENT_LIST:
+        raise HTTPException(status_code=400, detail=f"Unsupported agent: {req.agent}")
 
     normalized_session_id = req.sessionId.strip() if req.sessionId else ""
     sessionId = normalized_session_id if normalized_session_id else str(uuid4())
@@ -238,23 +238,23 @@ async def run_cli(req: RunRequest):
         command = ["docker", "run", "--rm", "-i"]
 
         normalized_args = normalized_req_args
-        docker_env = _build_docker_env(req.cli, normalized_req_args, req.env)
+        docker_env = _build_docker_env(req.agent, normalized_req_args, req.env)
 
-        # opencode and codex in codex.docker expect model via LITELLM_MODEL and will
+        # opencode and codex in codex.agent expect model via LITELLM_MODEL and will
         # inject a provider-aware --model value for non-interactive runs.
-        if req.cli in ("opencode", "codex"):
+        if req.agent in ("opencode", "codex"):
             normalized_args = _strip_model_args(normalized_req_args)
 
         for k, v in docker_env.items():
             command.extend(["-e", f"{k}={v}"])
 
         command.append(DOCKER_IMAGE)
-        # Use simple CLI name inside container (matches Dockerfile symlinks)
-        command.append(req.cli)
+        # Use simple agent name inside container (matches Dockerfile symlinks)
+        command.append(req.agent)
         command.extend(normalized_args)
     else:
         # Run locally
-        executable = req.cli
+        executable = req.agent
         command = [executable] + normalized_req_args
         if req.env:
             popen_env.update(req.env)
@@ -339,7 +339,7 @@ async def run_cli(req: RunRequest):
             if process is not None:
                 await _terminate_process(process)
             timeout_msg = (
-                "Request timed out while waiting for CLI response "
+                "Request timed out while waiting for agent response "
                 f"({RESPONSE_TIMEOUT_SECONDS}s)."
             )
             yield json.dumps({"type": "stderr", "data": timeout_msg}) + "\n"

@@ -7,10 +7,10 @@ services:
       # Mount the docker socket to allow spawning sibling containers
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
-      # Tell codex.serve to use the CLI docker image
-      - CODEX_DOCKER_IMAGE=craftslab/codex-cli-env:latest
-      # Supported CLI providers (comma-separated)
-      - CLI_LIST=claude,codex,gemini,opencode,qwen
+      # Tell codex.serve to use the agent docker image
+      - CODEX_AGENT_IMAGE=craftslab/codex-agent:latest
+      # Supported agent providers (comma-separated)
+      - AGENT_LIST=claude,codex,gemini,opencode,qwen
       # Supported model IDs (comma-separated)
       - MODEL_LIST=ollama-kimi-k2.5,ollama-minimax-m2.5,ollama-qwen3-coder
       # LiteLLM endpoint and credentials
