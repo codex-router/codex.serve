@@ -241,9 +241,8 @@ async def run_cli(req: RunRequest):
     if req.cli not in CLI_LIST:
         raise HTTPException(status_code=400, detail=f"Unsupported CLI: {req.cli}")
 
-    sessionId = req.sessionId.strip() if req.sessionId else str(uuid4())
-    if not sessionId:
-        raise HTTPException(status_code=400, detail="sessionId cannot be empty")
+    normalized_session_id = req.sessionId.strip() if req.sessionId else ""
+    sessionId = normalized_session_id if normalized_session_id else str(uuid4())
 
     existing_process = await _get_active_session_process(sessionId)
     if existing_process is not None:
