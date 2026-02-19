@@ -15,7 +15,7 @@ class RunRequest(BaseModel):
     args: List[str]
     stdin: str
     env: Optional[Dict[str, str]] = None
-    session_id: Optional[str] = None
+    sessionId: Optional[str] = None
 
 class RunResponse(BaseModel):
     stdout: str
@@ -168,35 +168,35 @@ async def _await_with_deadline(coro, deadline: Optional[float]):
     return await asyncio.wait_for(coro, timeout=remaining)
 
 
-async def _register_session(session_id: str, process: asyncio.subprocess.Process) -> None:
+async def _register_session(sessionId: str, process: asyncio.subprocess.Process) -> None:
     async with SESSIONS_LOCK:
-        RUN_SESSIONS[session_id] = process
+        RUN_SESSIONS[sessionId] = process
 
 
-async def _unregister_session(session_id: str, process: Optional[asyncio.subprocess.Process]) -> None:
+async def _unregister_session(sessionId: str, process: Optional[asyncio.subprocess.Process]) -> None:
     async with SESSIONS_LOCK:
-        current = RUN_SESSIONS.get(session_id)
+        current = RUN_SESSIONS.get(sessionId)
         if process is None or current is process:
-            RUN_SESSIONS.pop(session_id, None)
-        STOP_REQUESTED_SESSIONS.discard(session_id)
+            RUN_SESSIONS.pop(sessionId, None)
+        STOP_REQUESTED_SESSIONS.discard(sessionId)
 
 
-async def _mark_stop_requested(session_id: str) -> None:
+async def _mark_stop_requested(sessionId: str) -> None:
     async with SESSIONS_LOCK:
-        STOP_REQUESTED_SESSIONS.add(session_id)
+        STOP_REQUESTED_SESSIONS.add(sessionId)
 
 
-async def _consume_stop_requested(session_id: str) -> bool:
+async def _consume_stop_requested(sessionId: str) -> bool:
     async with SESSIONS_LOCK:
-        if session_id in STOP_REQUESTED_SESSIONS:
-            STOP_REQUESTED_SESSIONS.remove(session_id)
+        if sessionId in STOP_REQUESTED_SESSIONS:
+            STOP_REQUESTED_SESSIONS.remove(sessionId)
             return True
         return False
 
 
-async def _get_active_session_process(session_id: str) -> Optional[asyncio.subprocess.Process]:
+async def _get_active_session_process(sessionId: str) -> Optional[asyncio.subprocess.Process]:
     async with SESSIONS_LOCK:
-        process = RUN_SESSIONS.get(session_id)
+        process = RUN_SESSIONS.get(sessionId)
         if process is None or process.returncode is not None:
             return None
         return process
@@ -219,20 +219,20 @@ async def get_clis():
     }
 
 
-@app.post("/sessions/{session_id}/stop")
-async def stop_session(session_id: str):
-    normalized_session_id = session_id.strip()
-    if not normalized_session_id:
-        raise HTTPException(status_code=400, detail="session_id cannot be empty")
+@app.post("/sessions/{sessionId}/stop")
+async def stop_session(sessionId: str):
+    normalizedSessionId = sessionId.strip()
+    if not normalizedSessionId:
+        raise HTTPException(status_code=400, detail="sessionId cannot be empty")
 
-    process = await _get_active_session_process(normalized_session_id)
+    process = await _get_active_session_process(normalizedSessionId)
     if process is None:
-        raise HTTPException(status_code=404, detail=f"Session not found or already finished: {normalized_session_id}")
+        raise HTTPException(status_code=404, detail=f"Session not found or already finished: {normalizedSessionId}")
 
-    await _mark_stop_requested(normalized_session_id)
+    await _mark_stop_requested(normalizedSessionId)
     await _terminate_process(process)
     return {
-        "session_id": normalized_session_id,
+        "sessionId": normalizedSessionId,
         "status": "stopped",
     }
 
@@ -241,13 +241,13 @@ async def run_cli(req: RunRequest):
     if req.cli not in CLI_LIST:
         raise HTTPException(status_code=400, detail=f"Unsupported CLI: {req.cli}")
 
-    session_id = req.session_id.strip() if req.session_id else str(uuid4())
-    if not session_id:
-        raise HTTPException(status_code=400, detail="session_id cannot be empty")
+    sessionId = req.sessionId.strip() if req.sessionId else str(uuid4())
+    if not sessionId:
+        raise HTTPException(status_code=400, detail="sessionId cannot be empty")
 
-    existing_process = await _get_active_session_process(session_id)
+    existing_process = await _get_active_session_process(sessionId)
     if existing_process is not None:
-        raise HTTPException(status_code=409, detail=f"Session is already running: {session_id}")
+        raise HTTPException(status_code=409, detail=f"Session is already running: {sessionId}")
 
     popen_env = os.environ.copy()
 
@@ -281,7 +281,7 @@ async def run_cli(req: RunRequest):
         read_tasks = []
         process = None
         try:
-            yield json.dumps({"type": "session", "id": session_id}) + "\n"
+            yield json.dumps({"type": "session", "id": sessionId}) + "\n"
 
             process = await asyncio.create_subprocess_exec(
                 *command,
@@ -290,7 +290,7 @@ async def run_cli(req: RunRequest):
                 stderr=asyncio.subprocess.PIPE,
                 env=popen_env
             )
-            await _register_session(session_id, process)
+            await _register_session(sessionId, process)
 
             # Write stdin
             if req.stdin:
@@ -346,7 +346,7 @@ async def run_cli(req: RunRequest):
                     yield json.dumps(item) + "\n"
 
             exit_code = await _await_with_deadline(process.wait(), deadline)
-            if await _consume_stop_requested(session_id):
+            if await _consume_stop_requested(sessionId):
                 yield json.dumps({"type": "stderr", "data": "Session stopped via API.\n"}) + "\n"
             yield json.dumps({"type": "exit", "code": exit_code}) + "\n"
 
@@ -371,7 +371,7 @@ async def run_cli(req: RunRequest):
                     task.cancel()
             if read_tasks:
                 await asyncio.gather(*read_tasks, return_exceptions=True)
-            await _unregister_session(session_id, process)
+            await _unregister_session(sessionId, process)
 
     return StreamingResponse(stream_generator(), media_type="application/x-ndjson")
 

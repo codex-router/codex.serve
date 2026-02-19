@@ -5,7 +5,7 @@ HTTP server implementation for the Codex Gerrit plugin. This service exposes a R
 ## Features
 
 - Exposes a `POST /run` endpoint to execute CLI commands.
-- Exposes a `POST /sessions/{session_id}/stop` endpoint to stop an active `/run` session.
+- Exposes a `POST /sessions/{sessionId}/stop` endpoint to stop an active `/run` session.
 - Exposes a `GET /models` endpoint to return model IDs from `MODEL_LIST`.
 - Exposes a `GET /clis` endpoint to list supported CLI names.
 - Supports streaming output via newline-delimited JSON (NDJSON).
@@ -164,13 +164,13 @@ Executes a CLI command.
   "cli": "codex",
   "args": ["--model", "gpt-4"],
   "stdin": "Prompt text...",
-  "session_id": "optional-client-session-id"
+  "sessionId": "optional-client-session-id"
 }
 ```
 
 `env` is optional. In Docker mode, `LITELLM_BASE_URL` and `LITELLM_API_KEY` are read from `codex.serve` process env by default.
 
-`session_id` is optional:
+`sessionId` is optional:
 - If provided, it is used as the session identifier.
 - If omitted, `codex.serve` generates a UUID session ID.
 - If a session with the same ID is already running, `POST /run` returns `409`.
@@ -187,7 +187,7 @@ The response is a stream of newline-delimited JSON objects (NDJSON).
 {"type": "exit", "code": 0}
 ```
 
-### `POST /sessions/{session_id}/stop`
+### `POST /sessions/{sessionId}/stop`
 
 Stops an active `/run` session process.
 
@@ -201,7 +201,7 @@ curl -X POST "http://localhost:8000/sessions/my-session/stop"
 
 ```json
 {
-  "session_id": "my-session",
+  "sessionId": "my-session",
   "status": "stopped"
 }
 ```

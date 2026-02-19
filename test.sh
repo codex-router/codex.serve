@@ -146,7 +146,7 @@ echo "- Testing POST /run"
 curl -sS -N -o "${RUN_BODY}" \
 	-X POST "http://127.0.0.1:${SERVE_PORT}/run" \
 	-H "Content-Type: application/json" \
-	-d '{"cli":"codex","args":["--version"],"stdin":"","session_id":"smoke-run-session"}'
+	-d '{"cli":"codex","args":["--version"],"stdin":"","sessionId":"smoke-run-session"}'
 
 python3 - "${RUN_BODY}" <<'PY'
 import json
@@ -169,12 +169,12 @@ session_events = [e for e in events if e.get("type") == "session"]
 if not session_events:
 	raise SystemExit("/run response missing session event")
 
-session_id = session_events[0].get("id")
-if not isinstance(session_id, str) or not session_id:
-	raise SystemExit(f"/run session id is invalid: {session_id}")
+sessionIdValue = session_events[0].get("id")
+if not isinstance(sessionIdValue, str) or not sessionIdValue:
+	raise SystemExit(f"/run session id is invalid: {sessionIdValue}")
 
-if session_id != "smoke-run-session":
-	raise SystemExit(f"/run session id mismatch: got {session_id}")
+if sessionIdValue != "smoke-run-session":
+	raise SystemExit(f"/run session id mismatch: got {sessionIdValue}")
 
 exit_events = [e for e in events if e.get("type") == "exit"]
 if not exit_events:
@@ -185,14 +185,14 @@ if not isinstance(exit_code, int):
 	raise SystemExit(f"/run exit code is not an integer: {exit_code}")
 PY
 
-echo "- Testing POST /sessions/{session_id}/stop"
+echo "- Testing POST /sessions/{sessionId}/stop"
 STOP_RUN_BODY="${TMP_DIR}/stop-run.ndjson"
 STOP_RESP_BODY="${TMP_DIR}/stop-response.json"
 
 curl -sS -N -o "${STOP_RUN_BODY}" \
 	-X POST "http://127.0.0.1:${SERVE_PORT}/run" \
 	-H "Content-Type: application/json" \
-	-d '{"cli":"bash","args":["-lc","sleep 30"],"stdin":"","session_id":"stop-me"}' &
+	-d '{"cli":"bash","args":["-lc","sleep 30"],"stdin":"","sessionId":"stop-me"}' &
 RUN_PID=$!
 
 sleep 1
@@ -217,8 +217,8 @@ stop_run_path = sys.argv[2]
 with open(stop_response_path, "r", encoding="utf-8") as f:
 	stop_data = json.load(f)
 
-if stop_data.get("session_id") != "stop-me":
-	raise SystemExit(f"/sessions stop session_id mismatch: {stop_data}")
+if stop_data.get("sessionId") != "stop-me":
+	raise SystemExit(f"/sessions stop sessionId mismatch: {stop_data}")
 
 if stop_data.get("status") != "stopped":
 	raise SystemExit(f"/sessions stop status mismatch: {stop_data}")
