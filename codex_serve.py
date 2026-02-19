@@ -346,9 +346,12 @@ async def run_cli(req: RunRequest):
                     yield json.dumps(item) + "\n"
 
             exit_code = await _await_with_deadline(process.wait(), deadline)
-            if await _consume_stop_requested(sessionId):
+            stopped_by_api = await _consume_stop_requested(sessionId)
+            if stopped_by_api:
                 yield json.dumps({"type": "stderr", "data": "Session stopped via API.\n"}) + "\n"
-            yield json.dumps({"type": "exit", "code": exit_code}) + "\n"
+                yield json.dumps({"type": "exit", "code": 0}) + "\n"
+            else:
+                yield json.dumps({"type": "exit", "code": exit_code}) + "\n"
 
         except asyncio.TimeoutError:
             if process is not None:
