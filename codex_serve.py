@@ -112,6 +112,40 @@ def _strip_model_args(args: List[str]) -> List[str]:
     return normalized_args
 
 
+def _replace_auto_model_args(args: List[str]) -> List[str]:
+    resolved_model = _resolve_auto_model("auto")
+    if not resolved_model:
+        return args
+
+    normalized_args: List[str] = []
+    idx = 0
+    while idx < len(args):
+        arg = args[idx]
+        if arg in ("--model", "-m"):
+            normalized_args.append(arg)
+            if idx + 1 < len(args):
+                model_value = args[idx + 1].strip()
+                if model_value.lower() == "auto":
+                    normalized_args.append(resolved_model)
+                else:
+                    normalized_args.append(args[idx + 1])
+                idx += 2
+            else:
+                idx += 1
+            continue
+        if arg.startswith("--model="):
+            model_value = arg.split("=", 1)[1].strip()
+            if model_value.lower() == "auto":
+                normalized_args.append(f"--model={resolved_model}")
+            else:
+                normalized_args.append(arg)
+            idx += 1
+            continue
+        normalized_args.append(arg)
+        idx += 1
+    return normalized_args
+
+
 def _build_docker_env(cli: str, args: List[str], req_env: Optional[Dict[str, str]]) -> Dict[str, str]:
     docker_env: Dict[str, str] = {}
 
@@ -249,18 +283,19 @@ async def run_cli(req: RunRequest):
         raise HTTPException(status_code=409, detail=f"Session is already running: {sessionId}")
 
     popen_env = os.environ.copy()
+    normalized_req_args = _replace_auto_model_args(req.args)
 
     if DOCKER_IMAGE:
         # Run inside Docker
         command = ["docker", "run", "--rm", "-i"]
 
-        normalized_args = req.args
-        docker_env = _build_docker_env(req.cli, req.args, req.env)
+        normalized_args = normalized_req_args
+        docker_env = _build_docker_env(req.cli, normalized_req_args, req.env)
 
         # opencode in codex.docker expects model via LITELLM_MODEL and will inject
         # a provider-aware --model value for non-interactive runs.
         if req.cli == "opencode":
-            normalized_args = _strip_model_args(req.args)
+            normalized_args = _strip_model_args(normalized_req_args)
 
         for k, v in docker_env.items():
             command.extend(["-e", f"{k}={v}"])
@@ -272,7 +307,7 @@ async def run_cli(req: RunRequest):
     else:
         # Run locally
         executable = req.cli
-        command = [executable] + req.args
+        command = [executable] + normalized_req_args
         if req.env:
             popen_env.update(req.env)
 
