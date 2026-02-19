@@ -127,19 +127,17 @@ import sys
 with open(sys.argv[1], "r", encoding="utf-8") as f:
 	data = json.load(f)
 
-expected = {"auto"}
-
 models = data.get("models")
 count = data.get("count")
 
 if not isinstance(models, list):
 	raise SystemExit("/models response missing list field 'models'")
 
-if set(models) != expected:
-	raise SystemExit(f"/models response mismatch: got {models}")
+if models != []:
+	raise SystemExit(f"/models response mismatch: got {models}, expected []")
 
-if count != len(expected):
-	raise SystemExit(f"/models count mismatch: got {count}, expected {len(expected)}")
+if count != 0:
+	raise SystemExit(f"/models count mismatch: got {count}, expected 0")
 PY
 
 echo "- Testing POST /run"

@@ -12,7 +12,7 @@ services:
       # Supported CLI providers (comma-separated)
       - CLI_LIST=claude,codex,gemini,opencode,qwen
       # Supported model IDs (comma-separated)
-      - MODEL_LIST=auto,cloudflare-gemini-3-flash-preview,ollama-kimi-k2.5,openrouter-openrouter-free
+      - MODEL_LIST=cloudflare-gemini-3-flash-preview,ollama-kimi-k2.5,openrouter-openrouter-free
       # LiteLLM endpoint and credentials
       - LITELLM_BASE_URL=${LITELLM_BASE_URL}
       - LITELLM_API_KEY=${LITELLM_API_KEY}

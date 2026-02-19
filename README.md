@@ -44,7 +44,7 @@ The server reads supported CLIs from `CLI_LIST` (comma-separated). In local mode
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CLI_LIST` | `codex` | Supported CLI names (comma-separated) |
-| `MODEL_LIST` | `auto` | Returned model IDs for `GET /models` (comma-separated) |
+| `MODEL_LIST` | *(empty)* | Returned model IDs for `GET /models` (comma-separated) |
 | `LITELLM_BASE_URL` | *(unset)* | Default LiteLLM base URL passed to execution container in Docker mode |
 | `LITELLM_API_KEY` | *(unset)* | Default LiteLLM API key passed to execution container in Docker mode |
 | `RUN_RESPONSE_TIMEOUT_SECONDS` | *(unset)* | Optional timeout (seconds) for `POST /run`; `<= 0`, empty, or invalid disables timeout |
@@ -64,7 +64,6 @@ When enabled:
 3. `CLI_PROVIDER_NAME` is automatically set from the requested `cli`.
 4. Request `env` values are optional and can override inherited defaults.
 5. `LITELLM_MODEL` is inferred from `--model`/`-m` args when not explicitly provided.
-  - If model is `auto`, `codex.serve` picks the first non-`auto` entry from `MODEL_LIST` when available.
 6. The `cli` value is used as the executable name inside the execution container.
 7. If `codex.serve` itself runs in Docker, mount `/var/run/docker.sock` so it can start sibling containers.
 
@@ -117,7 +116,7 @@ This test now validates:
 
 Returns model IDs from `MODEL_LIST`.
 
-If `MODEL_LIST` is unset, the default is `["auto"]`.
+If `MODEL_LIST` is unset, the default is `[]`.
 
 **Example:**
 
@@ -129,8 +128,8 @@ curl "http://localhost:8000/models"
 
 ```json
 {
-  "models": ["auto"],
-  "count": 1
+  "models": [],
+  "count": 0
 }
 ```
 

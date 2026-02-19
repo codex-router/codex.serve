@@ -33,7 +33,7 @@ CLI_LIST = [
 # Optional Docker configuration
 DOCKER_IMAGE = os.environ.get("CODEX_DOCKER_IMAGE")
 
-DEFAULT_MODEL_LIST = ["auto"]
+DEFAULT_MODEL_LIST = []
 MODEL_LIST = [
     model.strip()
     for model in os.environ.get("MODEL_LIST", ",".join(DEFAULT_MODEL_LIST)).split(",")
@@ -43,24 +43,6 @@ MODEL_LIST = [
 RUN_SESSIONS: Dict[str, asyncio.subprocess.Process] = {}
 STOP_REQUESTED_SESSIONS = set()
 SESSIONS_LOCK = asyncio.Lock()
-
-
-def _resolve_auto_model(model: Optional[str]) -> Optional[str]:
-    if model is None:
-        return None
-
-    normalized = model.strip()
-    if not normalized:
-        return None
-
-    if normalized.lower() != "auto":
-        return normalized
-
-    for candidate in MODEL_LIST:
-        if candidate.strip().lower() != "auto":
-            return candidate
-
-    return None
 
 
 def _parse_response_timeout_seconds(value: Optional[str]) -> Optional[float]:
@@ -112,40 +94,6 @@ def _strip_model_args(args: List[str]) -> List[str]:
     return normalized_args
 
 
-def _replace_auto_model_args(args: List[str]) -> List[str]:
-    resolved_model = _resolve_auto_model("auto")
-    if not resolved_model:
-        return args
-
-    normalized_args: List[str] = []
-    idx = 0
-    while idx < len(args):
-        arg = args[idx]
-        if arg in ("--model", "-m"):
-            normalized_args.append(arg)
-            if idx + 1 < len(args):
-                model_value = args[idx + 1].strip()
-                if model_value.lower() == "auto":
-                    normalized_args.append(resolved_model)
-                else:
-                    normalized_args.append(args[idx + 1])
-                idx += 2
-            else:
-                idx += 1
-            continue
-        if arg.startswith("--model="):
-            model_value = arg.split("=", 1)[1].strip()
-            if model_value.lower() == "auto":
-                normalized_args.append(f"--model={resolved_model}")
-            else:
-                normalized_args.append(arg)
-            idx += 1
-            continue
-        normalized_args.append(arg)
-        idx += 1
-    return normalized_args
-
-
 def _build_docker_env(cli: str, args: List[str], req_env: Optional[Dict[str, str]]) -> Dict[str, str]:
     docker_env: Dict[str, str] = {}
 
@@ -161,15 +109,15 @@ def _build_docker_env(cli: str, args: List[str], req_env: Optional[Dict[str, str
     # Required by codex.docker entrypoint for provider-specific env mapping.
     docker_env["CLI_PROVIDER_NAME"] = cli
 
-    configured_model = _resolve_auto_model(docker_env.get("LITELLM_MODEL"))
+    configured_model = (docker_env.get("LITELLM_MODEL") or "").strip() or None
     if configured_model:
         docker_env["LITELLM_MODEL"] = configured_model
-    elif docker_env.get("LITELLM_MODEL"):
+    elif docker_env.get("LITELLM_MODEL") is not None:
         docker_env.pop("LITELLM_MODEL", None)
 
     # If no explicit model env provided, infer from common CLI flags.
     if not docker_env.get("LITELLM_MODEL"):
-        inferred_model = _resolve_auto_model(_extract_model_from_args(args))
+        inferred_model = (_extract_model_from_args(args) or "").strip() or None
         if inferred_model:
             docker_env["LITELLM_MODEL"] = inferred_model
 
@@ -283,7 +231,7 @@ async def run_cli(req: RunRequest):
         raise HTTPException(status_code=409, detail=f"Session is already running: {sessionId}")
 
     popen_env = os.environ.copy()
-    normalized_req_args = _replace_auto_model_args(req.args)
+    normalized_req_args = list(req.args)
 
     if DOCKER_IMAGE:
         # Run inside Docker
@@ -292,9 +240,9 @@ async def run_cli(req: RunRequest):
         normalized_args = normalized_req_args
         docker_env = _build_docker_env(req.cli, normalized_req_args, req.env)
 
-        # opencode in codex.docker expects model via LITELLM_MODEL and will inject
-        # a provider-aware --model value for non-interactive runs.
-        if req.cli == "opencode":
+        # opencode and codex in codex.docker expect model via LITELLM_MODEL and will
+        # inject a provider-aware --model value for non-interactive runs.
+        if req.cli in ("opencode", "codex"):
             normalized_args = _strip_model_args(normalized_req_args)
 
         for k, v in docker_env.items():
