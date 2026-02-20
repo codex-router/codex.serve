@@ -10,17 +10,11 @@ AGENT_IMAGE_TAG="codex-agent:test"
 SERVE_IMAGE_TAG="codex-serve:test"
 SERVE_CONTAINER_NAME="codex-serve-test"
 SERVE_PORT="18000"
-SYNC_TMP_DIR=""
 
 cleanup() {
 	docker rm -f "${SERVE_CONTAINER_NAME}" >/dev/null 2>&1 || true
-	if [ -n "${SYNC_TMP_DIR}" ]; then
-		rm -rf "${SYNC_TMP_DIR}" >/dev/null 2>&1 || true
-	fi
 }
 trap cleanup EXIT
-
-SYNC_TMP_DIR="$(mktemp -d)"
 
 echo "[1/5] Building agent Docker image from codex.agent: ${AGENT_IMAGE_TAG}"
 docker build -t "${AGENT_IMAGE_TAG}" -f "${AGENT_DIR}/Dockerfile" "${AGENT_DIR}"
@@ -60,7 +54,6 @@ docker run -d \
 	--name "${SERVE_CONTAINER_NAME}" \
 	-p "${SERVE_PORT}:8000" \
 	-v /var/run/docker.sock:/var/run/docker.sock \
-	-v "${SYNC_TMP_DIR}:/tmp/codex-sync-host" \
 	-e AGENT_LIST="codex,bash" \
 	-e CODEX_AGENT_IMAGE="${AGENT_IMAGE_TAG}" \
 	-e RUN_RESPONSE_TIMEOUT_SECONDS="60" \
@@ -249,49 +242,6 @@ if not exit_events:
 
 if not isinstance(exit_events[-1].get("code"), int):
 	raise SystemExit(f"stop-session run exit code is invalid: {exit_events[-1]}")
-PY
-
-echo "- Testing POST /workspace/sync"
-SYNC_RESP_BODY="${TMP_DIR}/workspace-sync.json"
-
-SYNC_STATUS="$(curl -sS -o "${SYNC_RESP_BODY}" -w "%{http_code}" \
-	-X POST "http://127.0.0.1:${SERVE_PORT}/workspace/sync" \
-	-H "Content-Type: application/json" \
-	-d '{"workspaceRoot":"/tmp/codex-sync-host/workspace","files":[{"path":"src/test-sync.txt","contentBase64":"aGVsbG8gd29ya2JlbmNoCg=="},{"path":"nested/a/b.txt","contentBase64":"bXVsdGktbGV2ZWwK"}]}')"
-
-if [ "${SYNC_STATUS}" != "200" ]; then
-	echo "Expected HTTP 200 from /workspace/sync, got ${SYNC_STATUS}"
-	cat "${SYNC_RESP_BODY}"
-	exit 1
-fi
-
-python3 - "${SYNC_RESP_BODY}" "${SYNC_TMP_DIR}" <<'PY'
-import json
-import os
-import sys
-
-response_path = sys.argv[1]
-sync_root = sys.argv[2]
-
-with open(response_path, "r", encoding="utf-8") as f:
-	data = json.load(f)
-
-written = data.get("written")
-if written != 2:
-	raise SystemExit(f"/workspace/sync written mismatch: got {written}, expected 2")
-
-expected = {
-	os.path.join(sync_root, "workspace", "src", "test-sync.txt"): "hello workbench\n",
-	os.path.join(sync_root, "workspace", "nested", "a", "b.txt"): "multi-level\n",
-}
-
-for path, expected_content in expected.items():
-	if not os.path.exists(path):
-		raise SystemExit(f"Synced file missing: {path}")
-	with open(path, "r", encoding="utf-8") as f:
-		actual = f.read()
-	if actual != expected_content:
-		raise SystemExit(f"Synced file content mismatch for {path}: {actual!r}")
 PY
 
 rm -rf "${TMP_DIR}"

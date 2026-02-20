@@ -2,7 +2,6 @@ import os
 import asyncio
 import json
 import codecs
-import base64
 from typing import List, Optional, Dict
 from uuid import uuid4
 from fastapi import FastAPI, HTTPException
@@ -22,20 +21,6 @@ class RunResponse(BaseModel):
     stdout: str
     stderr: str
     exit_code: int
-
-
-class WorkspaceSyncFile(BaseModel):
-    path: str
-    contentBase64: str
-
-
-class WorkspaceSyncRequest(BaseModel):
-    workspaceRoot: str
-    files: List[WorkspaceSyncFile]
-
-
-class WorkspaceSyncResponse(BaseModel):
-    written: int
 
 # Supported agent providers, configurable via env (comma-separated)
 DEFAULT_AGENT_LIST = ["codex"]
@@ -381,50 +366,6 @@ async def run_agent(req: RunRequest):
             await _unregister_session(sessionId, process)
 
     return StreamingResponse(stream_generator(), media_type="application/x-ndjson")
-
-
-def _normalize_relative_file_path(path: str) -> str:
-    normalized = (path or "").strip().replace("\\", "/")
-    normalized = "/".join(part for part in normalized.split("/") if part and part != ".")
-    if not normalized:
-        raise HTTPException(status_code=400, detail="File path cannot be empty")
-    for part in normalized.split("/"):
-        if part == "..":
-            raise HTTPException(status_code=400, detail=f"Invalid file path: {path}")
-    return normalized
-
-
-@app.post("/workspace/sync", response_model=WorkspaceSyncResponse)
-async def sync_workspace(req: WorkspaceSyncRequest):
-    workspace_root = (req.workspaceRoot or "").strip()
-    if not workspace_root:
-        raise HTTPException(status_code=400, detail="workspaceRoot cannot be empty")
-
-    root = os.path.abspath(workspace_root)
-    os.makedirs(root, exist_ok=True)
-
-    written = 0
-    for file in req.files:
-        relative_path = _normalize_relative_file_path(file.path)
-        target_path = os.path.abspath(os.path.join(root, relative_path))
-        if not target_path.startswith(root + os.sep) and target_path != root:
-            raise HTTPException(status_code=400, detail=f"Invalid file path: {file.path}")
-
-        parent_dir = os.path.dirname(target_path)
-        os.makedirs(parent_dir, exist_ok=True)
-        try:
-            data = base64.b64decode(file.contentBase64 or "", validate=True)
-        except Exception as decode_error:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid base64 content for {file.path}: {str(decode_error)}",
-            )
-
-        with open(target_path, "wb") as output_file:
-            output_file.write(data)
-        written += 1
-
-    return WorkspaceSyncResponse(written=written)
 
 
 if __name__ == "__main__":
