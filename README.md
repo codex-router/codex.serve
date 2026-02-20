@@ -8,6 +8,7 @@ HTTP server implementation for the Codex Gerrit plugin. This service exposes a R
 - Exposes a `POST /sessions/{sessionId}/stop` endpoint to stop an active `/run` session.
 - Exposes a `GET /models` endpoint to return model IDs from `MODEL_LIST`.
 - Exposes a `GET /agents` endpoint to list supported agent names.
+- Exposes a `POST /workspace/sync` endpoint to write patchset files to a local workspace path.
 - Supports streaming output via newline-delimited JSON (NDJSON).
 - Supports a configurable agent allowlist via `AGENT_LIST`.
 - Handles environment variable propagation (e.g., LiteLLM config).
@@ -212,4 +213,30 @@ If `RUN_RESPONSE_TIMEOUT_SECONDS` is configured and the timeout is reached befor
 ```json
 {"type": "stderr", "data": "Request timed out while waiting for agent response (...s)."}
 {"type": "exit", "code": 124}
+```
+
+### `POST /workspace/sync`
+
+Writes files into a local workspace directory on the machine running `codex.serve`.
+
+**Request Body:**
+
+```json
+{
+  "workspaceRoot": "/home/user/repo",
+  "files": [
+    {
+      "path": "src/main/App.java",
+      "contentBase64": "SGVsbG8="
+    }
+  ]
+}
+```
+
+**Response:**
+
+```json
+{
+  "written": 1
+}
 ```
