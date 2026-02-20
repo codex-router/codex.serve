@@ -74,7 +74,16 @@ def _build_stdin_with_context(stdin: str, context_files: Optional[List[Dict[str,
     if not context_files:
         return prompt_text
 
-    lines = [prompt_text.rstrip("\n"), "", "Referenced file context:"]
+    lines = [
+        prompt_text.rstrip("\n"),
+        "",
+        "Execution note:",
+        "- Inline file contents below are provided intentionally as task context.",
+        "- Do not request filesystem permission or claim missing file access.",
+        "- If user asks to modify files, respond with direct edits based on this context (prefer unified diff).",
+        "",
+        "Referenced file context:",
+    ]
     included_count = 0
 
     for item in context_files:

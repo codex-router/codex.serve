@@ -82,6 +82,8 @@ TMP_DIR="$(mktemp -d)"
 AGENTS_BODY="${TMP_DIR}/agents.json"
 MODELS_BODY="${TMP_DIR}/models.json"
 RUN_BODY="${TMP_DIR}/run.ndjson"
+CONTEXT_RUN_BODY="${TMP_DIR}/context-run.ndjson"
+CONTEXT_RUN_PAYLOAD="${TMP_DIR}/context-run.json"
 
 echo "- Testing GET /agents"
 AGENTS_STATUS="$(curl -sS -o "${AGENTS_BODY}" -w "%{http_code}" "http://127.0.0.1:${SERVE_PORT}/agents")"
@@ -181,6 +183,67 @@ if not exit_events:
 exit_code = exit_events[-1].get("code")
 if not isinstance(exit_code, int):
 	raise SystemExit(f"/run exit code is not an integer: {exit_code}")
+PY
+
+echo "- Testing POST /run with contextFiles injection"
+cat > "${CONTEXT_RUN_PAYLOAD}" <<'JSON'
+{
+  "agent": "bash",
+  "args": ["-lc", "cat"],
+  "stdin": "update @test.c to support to print hello world",
+  "sessionId": "context-run-session",
+  "contextFiles": [
+    {
+      "path": "test.c",
+      "content": "int main(){return 0;}"
+    }
+  ]
+}
+JSON
+
+curl -sS -N -o "${CONTEXT_RUN_BODY}" \
+	-X POST "http://127.0.0.1:${SERVE_PORT}/run" \
+	-H "Content-Type: application/json" \
+	--data-binary "@${CONTEXT_RUN_PAYLOAD}"
+
+python3 - "${CONTEXT_RUN_BODY}" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+events = []
+
+with open(path, "r", encoding="utf-8") as f:
+	for line in f:
+		line = line.strip()
+		if not line:
+			continue
+		events.append(json.loads(line))
+
+if not events:
+	raise SystemExit("/run context test returned no NDJSON events")
+
+stdout_text = "".join(e.get("data", "") for e in events if e.get("type") == "stdout")
+required_fragments = [
+	"Execution note:",
+	"Do not request filesystem permission or claim missing file access.",
+	"Referenced file context:",
+	"--- FILE: test.c ---",
+	"int main(){return 0;}",
+	"--- END FILE: test.c ---",
+	"update @test.c to support to print hello world",
+]
+
+for fragment in required_fragments:
+	if fragment not in stdout_text:
+		raise SystemExit(f"/run context test missing expected fragment: {fragment}")
+
+exit_events = [e for e in events if e.get("type") == "exit"]
+if not exit_events:
+	raise SystemExit("/run context test missing exit event")
+
+if exit_events[-1].get("code") != 0:
+	raise SystemExit(f"/run context test expected exit 0, got {exit_events[-1].get('code')}")
 PY
 
 echo "- Testing POST /sessions/{sessionId}/stop"
