@@ -11,6 +11,7 @@ HTTP server implementation for the Codex Gerrit plugin. This service exposes a R
 - Supports streaming output via newline-delimited JSON (NDJSON).
 - Supports a configurable agent allowlist via `AGENT_LIST`.
 - Handles environment variable propagation (e.g., LiteLLM config).
+- Supports optional `contextFiles` in `POST /run` to prepend referenced file contents into agent stdin context.
 
 ## Requirements
 
@@ -163,11 +164,22 @@ Executes a agent command.
   "agent": "codex",
   "args": ["--model", "gpt-4"],
   "stdin": "Prompt text...",
-  "sessionId": "optional-client-session-id"
+  "sessionId": "optional-client-session-id",
+  "contextFiles": [
+    {
+      "path": "test.c",
+      "content": "#include <stdio.h>\\nint main(){printf(\"Hello World\\\\n\");}"
+    }
+  ]
 }
 ```
 
 `env` is optional. In Docker mode, `LITELLM_BASE_URL` and `LITELLM_API_KEY` are read from `codex.serve` process env by default.
+
+`contextFiles` is optional:
+- Each item should include `path` and `content`.
+- When present, `codex.serve` prepends a clearly delimited file-context block to `stdin` before running the agent.
+- Server-side limits cap number of files and per-file content size for safety.
 
 `sessionId` is optional:
 - If provided, it is used as the session identifier.

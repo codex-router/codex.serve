@@ -16,6 +16,7 @@ class RunRequest(BaseModel):
     stdin: str
     env: Optional[Dict[str, str]] = None
     sessionId: Optional[str] = None
+    contextFiles: Optional[List[Dict[str, str]]] = None
 
 class RunResponse(BaseModel):
     stdout: str
@@ -63,6 +64,44 @@ def _parse_response_timeout_seconds(value: Optional[str]) -> Optional[float]:
 RESPONSE_TIMEOUT_SECONDS = _parse_response_timeout_seconds(
     os.environ.get("RUN_RESPONSE_TIMEOUT_SECONDS")
 )
+
+MAX_CONTEXT_FILES = 20
+MAX_CONTEXT_FILE_CHARS = 12_000
+
+
+def _build_stdin_with_context(stdin: str, context_files: Optional[List[Dict[str, str]]]) -> str:
+    prompt_text = stdin or ""
+    if not context_files:
+        return prompt_text
+
+    lines = [prompt_text.rstrip("\n"), "", "Referenced file context:"]
+    included_count = 0
+
+    for item in context_files:
+        if included_count >= MAX_CONTEXT_FILES:
+            break
+        if not isinstance(item, dict):
+            continue
+        path = (item.get("path") or "").strip()
+        content = item.get("content") or ""
+        if not path:
+            continue
+        if not isinstance(content, str):
+            content = str(content)
+
+        if len(content) > MAX_CONTEXT_FILE_CHARS:
+            content = content[:MAX_CONTEXT_FILE_CHARS] + "\n\n[truncated by codex.serve context limit]"
+
+        lines.append("")
+        lines.append(f"--- FILE: {path} ---")
+        lines.append(content)
+        lines.append(f"--- END FILE: {path} ---")
+        included_count += 1
+
+    if included_count == 0:
+        return prompt_text
+
+    return "\n".join(lines).strip() + "\n"
 
 
 def _extract_model_from_args(args: List[str]) -> Optional[str]:
@@ -225,6 +264,7 @@ async def run_agent(req: RunRequest):
 
     normalized_session_id = req.sessionId.strip() if req.sessionId else ""
     sessionId = normalized_session_id if normalized_session_id else str(uuid4())
+    stdin_payload = _build_stdin_with_context(req.stdin, req.contextFiles)
 
     existing_process = await _get_active_session_process(sessionId)
     if existing_process is not None:
@@ -275,8 +315,8 @@ async def run_agent(req: RunRequest):
             await _register_session(sessionId, process)
 
             # Write stdin
-            if req.stdin:
-                process.stdin.write(req.stdin.encode())
+            if stdin_payload:
+                process.stdin.write(stdin_payload.encode())
                 await process.stdin.drain()
             process.stdin.close()
 
