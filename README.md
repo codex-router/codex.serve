@@ -12,6 +12,7 @@ HTTP server implementation for the Codex Gerrit plugin. This service exposes a R
 - Supports a configurable agent allowlist via `AGENT_LIST`.
 - Handles environment variable propagation (e.g., LiteLLM config).
 - Supports optional `contextFiles` in `POST /run` to prepend referenced file contents into agent stdin context.
+- Each `contextFiles` item is a typed `ContextFileItem` object supporting `content` (plain text) or `base64Content` (base64-encoded bytes) for flexible file attachment, including binary and non-UTF-8 files.
 
 ## Requirements
 
@@ -169,6 +170,10 @@ Executes a agent command.
     {
       "path": "test.c",
       "content": "#include <stdio.h>\\nint main(){printf(\"Hello World\\\\n\");}"
+    },
+    {
+      "path": "logo.png",
+      "base64Content": "iVBORw0KGgoAAAANSUhEUgAA..."
     }
   ]
 }
@@ -177,7 +182,9 @@ Executes a agent command.
 `env` is optional. In Docker mode, `LITELLM_BASE_URL` and `LITELLM_API_KEY` are read from `codex.serve` process env by default.
 
 `contextFiles` is optional:
-- Each item should include `path` and `content`.
+- Each item must include `path` and at least one of `content` or `base64Content`.
+- `content` — plain UTF-8 text content of the file.
+- `base64Content` — base64-encoded file bytes (decoded as UTF-8 with replacement characters). Useful for binary or non-UTF-8 files. Takes precedence over `content` when both are provided.
 - When present, `codex.serve` prepends a clearly delimited file-context block to `stdin` before running the agent.
 - Server-side limits cap number of files and per-file content size for safety.
 

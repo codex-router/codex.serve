@@ -2,6 +2,7 @@ import os
 import asyncio
 import json
 import codecs
+import base64
 from typing import List, Optional, Dict
 from uuid import uuid4
 from fastapi import FastAPI, HTTPException
@@ -10,13 +11,26 @@ from pydantic import BaseModel
 
 app = FastAPI()
 
+
+class ContextFileItem(BaseModel):
+    """A file item to include as context in an agent run.
+
+    Provide either ``content`` (plain text) or ``base64Content`` (base64-encoded
+    bytes, useful for binary or non-UTF-8 files).  If both are supplied,
+    ``base64Content`` takes precedence.
+    """
+    path: str
+    content: Optional[str] = None
+    base64Content: Optional[str] = None
+
+
 class RunRequest(BaseModel):
     agent: str
     args: List[str]
     stdin: str
     env: Optional[Dict[str, str]] = None
     sessionId: Optional[str] = None
-    contextFiles: Optional[List[Dict[str, str]]] = None
+    contextFiles: Optional[List[ContextFileItem]] = None
 
 class RunResponse(BaseModel):
     stdout: str
@@ -69,7 +83,25 @@ MAX_CONTEXT_FILES = 20
 MAX_CONTEXT_FILE_CHARS = 12_000
 
 
-def _build_stdin_with_context(stdin: str, context_files: Optional[List[Dict[str, str]]]) -> str:
+def _resolve_context_file_content(item: ContextFileItem) -> Optional[str]:
+    """Return the text content for a ContextFileItem.
+
+    Decodes ``base64Content`` when present (falling back to UTF-8 with
+    replacement characters for binary files); otherwise returns ``content``.
+    Returns ``None`` when the item carries no usable content.
+    """
+    if item.base64Content:
+        try:
+            raw_bytes = base64.b64decode(item.base64Content)
+            return raw_bytes.decode("utf-8", errors="replace")
+        except Exception:
+            return None
+    if item.content is not None:
+        return item.content
+    return None
+
+
+def _build_stdin_with_context(stdin: str, context_files: Optional[List[ContextFileItem]]) -> str:
     prompt_text = stdin or ""
     if not context_files:
         return prompt_text
@@ -89,12 +121,12 @@ def _build_stdin_with_context(stdin: str, context_files: Optional[List[Dict[str,
     for item in context_files:
         if included_count >= MAX_CONTEXT_FILES:
             break
-        if not isinstance(item, dict):
-            continue
-        path = (item.get("path") or "").strip()
-        content = item.get("content") or ""
+        path = (item.path or "").strip() if item.path else ""
         if not path:
             continue
+        content = _resolve_context_file_content(item)
+        if content is None:
+            content = ""
         if not isinstance(content, str):
             content = str(content)
 

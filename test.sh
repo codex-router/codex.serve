@@ -84,6 +84,8 @@ MODELS_BODY="${TMP_DIR}/models.json"
 RUN_BODY="${TMP_DIR}/run.ndjson"
 CONTEXT_RUN_BODY="${TMP_DIR}/context-run.ndjson"
 CONTEXT_RUN_PAYLOAD="${TMP_DIR}/context-run.json"
+B64_CONTEXT_RUN_BODY="${TMP_DIR}/b64-context-run.ndjson"
+B64_CONTEXT_RUN_PAYLOAD="${TMP_DIR}/b64-context-run.json"
 
 echo "- Testing GET /agents"
 AGENTS_STATUS="$(curl -sS -o "${AGENTS_BODY}" -w "%{http_code}" "http://127.0.0.1:${SERVE_PORT}/agents")"
@@ -244,6 +246,68 @@ if not exit_events:
 
 if exit_events[-1].get("code") != 0:
 	raise SystemExit(f"/run context test expected exit 0, got {exit_events[-1].get('code')}")
+PY
+
+echo "- Testing POST /run with contextFiles base64Content injection"
+# base64 of: int main(){return 0;}
+# echo -n 'int main(){return 0;}' | base64  =>  aW50IG1haW4oKXtyZXR1cm4gMDt9
+cat > "${B64_CONTEXT_RUN_PAYLOAD}" <<'JSON'
+{
+  "agent": "bash",
+  "args": ["-lc", "cat"],
+  "stdin": "explain @hello.c",
+  "sessionId": "b64-context-run-session",
+  "contextFiles": [
+    {
+      "path": "hello.c",
+      "base64Content": "aW50IG1haW4oKXtyZXR1cm4gMDt9"
+    }
+  ]
+}
+JSON
+
+curl -sS -N -o "${B64_CONTEXT_RUN_BODY}" \
+	-X POST "http://127.0.0.1:${SERVE_PORT}/run" \
+	-H "Content-Type: application/json" \
+	--data-binary "@${B64_CONTEXT_RUN_PAYLOAD}"
+
+python3 - "${B64_CONTEXT_RUN_BODY}" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+events = []
+
+with open(path, "r", encoding="utf-8") as f:
+	for line in f:
+		line = line.strip()
+		if not line:
+			continue
+		events.append(json.loads(line))
+
+if not events:
+	raise SystemExit("/run base64 context test returned no NDJSON events")
+
+stdout_text = "".join(e.get("data", "") for e in events if e.get("type") == "stdout")
+required_fragments = [
+	"Execution note:",
+	"Referenced file context:",
+	"--- FILE: hello.c ---",
+	"int main(){return 0;}",
+	"--- END FILE: hello.c ---",
+	"explain @hello.c",
+]
+
+for fragment in required_fragments:
+	if fragment not in stdout_text:
+		raise SystemExit(f"/run base64 context test missing expected fragment: {fragment}")
+
+exit_events = [e for e in events if e.get("type") == "exit"]
+if not exit_events:
+	raise SystemExit("/run base64 context test missing exit event")
+
+if exit_events[-1].get("code") != 0:
+	raise SystemExit(f"/run base64 context test expected exit 0, got {exit_events[-1].get('code')}")
 PY
 
 echo "- Testing POST /sessions/{sessionId}/stop"
