@@ -112,6 +112,29 @@ This test now validates:
 - The agent image built from `codex.agent/Dockerfile` is Ubuntu-based and all supported agents are callable.
 - A `codex.serve` container built from this module's `Dockerfile` can execute `POST /run` requests by launching the configured `CODEX_AGENT_IMAGE`.
 
+### Example Script (`example.sh`)
+
+To run a simple local streaming request demo (including `sessionId` and `contextFiles`), start the server first and then run:
+
+```bash
+./example.sh
+```
+
+You can override the target server with:
+
+```bash
+BASE_URL="http://localhost:8000" ./example.sh
+```
+
+The script sends `POST /run` with:
+- `agent: "codex"`
+- `args: ["--model", "ollama-kimi-k2.5"]`
+- one text `contextFiles` item (`content`) and one base64 item (`base64Content`)
+- a generated `sessionId` in the form `demo-<timestamp>`
+
+Expected output is NDJSON containing `session`, streamed `stdout`/`stderr`, and a final `exit` object.
+If response timeout is configured server-side and reached, the stream may end with `{"type":"exit","code":124}`.
+
 ## API
 
 ### `GET /models`
