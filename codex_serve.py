@@ -112,6 +112,7 @@ def _build_stdin_with_context(stdin: str, context_files: Optional[List[ContextFi
         "Execution note:",
         "- Inline file contents below are provided intentionally as task context.",
         "- Do not request filesystem permission or claim missing file access.",
+        "- Do NOT invoke any file-reading tool, shell command, or API to fetch these files — their content is already present below.",
         "- If user asks to modify files, respond with direct edits based on this context (prefer unified diff).",
         "",
         "Referenced file context:",
