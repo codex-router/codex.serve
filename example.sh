@@ -4,10 +4,10 @@ set -euo pipefail
 BASE_URL="${BASE_URL:-http://localhost:8000}"
 SESSION_ID="demo-$(date +%s)"
 
-echo "Testing POST ${BASE_URL}/run with sessionId=${SESSION_ID}"
+echo "Testing POST ${BASE_URL}/agent/run with sessionId=${SESSION_ID}"
 echo "Expect NDJSON stream with: session/stdout|stderr/exit"
 
-curl -N -sS -X POST "${BASE_URL}/run" \
+curl -N -sS -X POST "${BASE_URL}/agent/run" \
   -H "Content-Type: application/json" \
   --data-binary @- <<EOF
 {

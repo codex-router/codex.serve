@@ -84,7 +84,7 @@ if [ "${ready}" -ne 1 ]; then
 	exit 1
 fi
 
-echo "[6/6] Testing codex.serve APIs (/agents, /models, /run, /insight/run)"
+echo "[6/6] Testing codex.serve APIs (/agents, /models, /agent/run, /insight/run)"
 TMP_DIR="$(mktemp -d)"
 AGENTS_BODY="${TMP_DIR}/agents.json"
 MODELS_BODY="${TMP_DIR}/models.json"
@@ -153,9 +153,9 @@ if count != 0:
 	raise SystemExit(f"/models count mismatch: got {count}, expected 0")
 PY
 
-echo "- Testing POST /run"
+echo "- Testing POST /agent/run"
 curl -sS -N -o "${RUN_BODY}" \
-	-X POST "http://127.0.0.1:${SERVE_PORT}/run" \
+	-X POST "http://127.0.0.1:${SERVE_PORT}/agent/run" \
 	-H "Content-Type: application/json" \
 	-d '{"agent":"codex","args":["--version"],"stdin":"","sessionId":"smoke-run-session"}'
 
@@ -174,29 +174,29 @@ with open(path, "r", encoding="utf-8") as f:
 		events.append(json.loads(line))
 
 if not events:
-	raise SystemExit("/run returned no NDJSON events")
+	raise SystemExit("/agent/run returned no NDJSON events")
 
 session_events = [e for e in events if e.get("type") == "session"]
 if not session_events:
-	raise SystemExit("/run response missing session event")
+	raise SystemExit("/agent/run response missing session event")
 
 sessionIdValue = session_events[0].get("id")
 if not isinstance(sessionIdValue, str) or not sessionIdValue:
-	raise SystemExit(f"/run session id is invalid: {sessionIdValue}")
+	raise SystemExit(f"/agent/run session id is invalid: {sessionIdValue}")
 
 if sessionIdValue != "smoke-run-session":
-	raise SystemExit(f"/run session id mismatch: got {sessionIdValue}")
+	raise SystemExit(f"/agent/run session id mismatch: got {sessionIdValue}")
 
 exit_events = [e for e in events if e.get("type") == "exit"]
 if not exit_events:
-	raise SystemExit("/run response missing exit event")
+	raise SystemExit("/agent/run response missing exit event")
 
 exit_code = exit_events[-1].get("code")
 if not isinstance(exit_code, int):
-	raise SystemExit(f"/run exit code is not an integer: {exit_code}")
+	raise SystemExit(f"/agent/run exit code is not an integer: {exit_code}")
 PY
 
-echo "- Testing POST /run with contextFiles injection"
+echo "- Testing POST /agent/run with contextFiles injection"
 cat > "${CONTEXT_RUN_PAYLOAD}" <<'JSON'
 {
   "agent": "bash",
@@ -213,7 +213,7 @@ cat > "${CONTEXT_RUN_PAYLOAD}" <<'JSON'
 JSON
 
 curl -sS -N -o "${CONTEXT_RUN_BODY}" \
-	-X POST "http://127.0.0.1:${SERVE_PORT}/run" \
+	-X POST "http://127.0.0.1:${SERVE_PORT}/agent/run" \
 	-H "Content-Type: application/json" \
 	--data-binary "@${CONTEXT_RUN_PAYLOAD}"
 
@@ -232,7 +232,7 @@ with open(path, "r", encoding="utf-8") as f:
 		events.append(json.loads(line))
 
 if not events:
-	raise SystemExit("/run context test returned no NDJSON events")
+	raise SystemExit("/agent/run context test returned no NDJSON events")
 
 stdout_text = "".join(e.get("data", "") for e in events if e.get("type") == "stdout")
 required_fragments = [
@@ -247,17 +247,17 @@ required_fragments = [
 
 for fragment in required_fragments:
 	if fragment not in stdout_text:
-		raise SystemExit(f"/run context test missing expected fragment: {fragment}")
+		raise SystemExit(f"/agent/run context test missing expected fragment: {fragment}")
 
 exit_events = [e for e in events if e.get("type") == "exit"]
 if not exit_events:
-	raise SystemExit("/run context test missing exit event")
+	raise SystemExit("/agent/run context test missing exit event")
 
 if exit_events[-1].get("code") != 0:
-	raise SystemExit(f"/run context test expected exit 0, got {exit_events[-1].get('code')}")
+	raise SystemExit(f"/agent/run context test expected exit 0, got {exit_events[-1].get('code')}")
 PY
 
-echo "- Testing POST /run with contextFiles base64Content injection"
+echo "- Testing POST /agent/run with contextFiles base64Content injection"
 # base64 of: int main(){return 0;}
 # echo -n 'int main(){return 0;}' | base64  =>  aW50IG1haW4oKXtyZXR1cm4gMDt9
 cat > "${B64_CONTEXT_RUN_PAYLOAD}" <<'JSON'
@@ -276,7 +276,7 @@ cat > "${B64_CONTEXT_RUN_PAYLOAD}" <<'JSON'
 JSON
 
 curl -sS -N -o "${B64_CONTEXT_RUN_BODY}" \
-	-X POST "http://127.0.0.1:${SERVE_PORT}/run" \
+	-X POST "http://127.0.0.1:${SERVE_PORT}/agent/run" \
 	-H "Content-Type: application/json" \
 	--data-binary "@${B64_CONTEXT_RUN_PAYLOAD}"
 
@@ -295,7 +295,7 @@ with open(path, "r", encoding="utf-8") as f:
 		events.append(json.loads(line))
 
 if not events:
-	raise SystemExit("/run base64 context test returned no NDJSON events")
+	raise SystemExit("/agent/run base64 context test returned no NDJSON events")
 
 stdout_text = "".join(e.get("data", "") for e in events if e.get("type") == "stdout")
 required_fragments = [
@@ -309,14 +309,14 @@ required_fragments = [
 
 for fragment in required_fragments:
 	if fragment not in stdout_text:
-		raise SystemExit(f"/run base64 context test missing expected fragment: {fragment}")
+		raise SystemExit(f"/agent/run base64 context test missing expected fragment: {fragment}")
 
 exit_events = [e for e in events if e.get("type") == "exit"]
 if not exit_events:
-	raise SystemExit("/run base64 context test missing exit event")
+	raise SystemExit("/agent/run base64 context test missing exit event")
 
 if exit_events[-1].get("code") != 0:
-	raise SystemExit(f"/run base64 context test expected exit 0, got {exit_events[-1].get('code')}")
+	raise SystemExit(f"/agent/run base64 context test expected exit 0, got {exit_events[-1].get('code')}")
 PY
 
 echo "- Testing POST /sessions/{sessionId}/stop"
@@ -324,7 +324,7 @@ STOP_RUN_BODY="${TMP_DIR}/stop-run.ndjson"
 STOP_RESP_BODY="${TMP_DIR}/stop-response.json"
 
 curl -sS -N -o "${STOP_RUN_BODY}" \
-	-X POST "http://127.0.0.1:${SERVE_PORT}/run" \
+	-X POST "http://127.0.0.1:${SERVE_PORT}/agent/run" \
 	-H "Content-Type: application/json" \
 	-d '{"agent":"bash","args":["-lc","sleep 30"],"stdin":"","sessionId":"stop-me"}' &
 RUN_PID=$!
@@ -366,7 +366,7 @@ with open(stop_run_path, "r", encoding="utf-8") as f:
 		events.append(json.loads(line))
 
 if not events:
-	raise SystemExit("stop-session /run returned no NDJSON events")
+	raise SystemExit("stop-session /agent/run returned no NDJSON events")
 
 session_events = [e for e in events if e.get("type") == "session"]
 if not session_events or session_events[0].get("id") != "stop-me":

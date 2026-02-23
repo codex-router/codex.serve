@@ -4,15 +4,15 @@ HTTP server implementation for the Codex Gerrit plugin. This service exposes a R
 
 ## Features
 
-- Exposes a `POST /run` endpoint to execute agent commands.
+- Exposes a `POST /agent/run` endpoint to execute agent commands.
 - Exposes a `POST /insight/run` endpoint to execute `codex-insight` Docker jobs and return generated insight pages.
-- Exposes a `POST /sessions/{sessionId}/stop` endpoint to stop an active `/run` session.
+- Exposes a `POST /sessions/{sessionId}/stop` endpoint to stop an active `/agent/run` session.
 - Exposes a `GET /models` endpoint to return model IDs from `AGENT_MODEL`.
 - Exposes a `GET /agents` endpoint to list supported agent names.
 - Supports streaming output via newline-delimited JSON (NDJSON).
 - Supports a configurable agent allowlist via `AGENT_LIST`.
 - Handles environment variable propagation (e.g., LiteLLM config).
-- Supports optional `contextFiles` in `POST /run` to prepend referenced file contents into agent stdin context.
+- Supports optional `contextFiles` in `POST /agent/run` to prepend referenced file contents into agent stdin context.
 - Each `contextFiles` item is a typed `ContextFileItem` object supporting `content` (plain text) or `base64Content` (base64-encoded bytes) for flexible file attachment, including binary and non-UTF-8 files.
 
 ## Requirements
@@ -50,9 +50,9 @@ The server reads supported agents from `AGENT_LIST` (comma-separated). In local 
 | `AGENT_MODEL` | *(empty)* | Returned model IDs for `GET /models` (comma-separated) |
 | `LITELLM_BASE_URL` | *(unset)* | Default LiteLLM base URL passed to execution container in Docker mode |
 | `LITELLM_API_KEY` | *(unset)* | Default LiteLLM API key passed to execution container in Docker mode |
-| `LITELLM_MODEL` | *(unset)* | Default model for `POST /run`, and for `POST /insight/run` when using a custom `CODEX_INSIGHT_IMAGE` |
+| `LITELLM_MODEL` | *(unset)* | Default model for `POST /agent/run`, and for `POST /insight/run` when using a custom `CODEX_INSIGHT_IMAGE` |
 | `INSIGHT_MODEL` | *(unset)* | Default model used for `POST /insight/run` when `CODEX_INSIGHT_IMAGE` is `craftslab/codex-insight:latest` (mapped to container `LITELLM_MODEL`) |
-| `RUN_RESPONSE_TIMEOUT_SECONDS` | *(unset)* | Optional timeout (seconds) for `POST /run`; `<= 0`, empty, or invalid disables timeout |
+| `RUN_RESPONSE_TIMEOUT_SECONDS` | *(unset)* | Optional timeout (seconds) for `POST /agent/run`; `<= 0`, empty, or invalid disables timeout |
 | `CODEX_INSIGHT_IMAGE` | `craftslab/codex-insight:latest` | Docker image used by `POST /insight/run` |
 | `INSIGHT_RESPONSE_TIMEOUT_SECONDS` | *(unset)* | Optional timeout (seconds) for `POST /insight/run`; `<= 0`, empty, or invalid disables timeout |
 
@@ -102,7 +102,7 @@ This configuration:
 - Mounts the host's Docker socket (`/var/run/docker.sock`) so it can spawn sibling containers.
 - Configures `CODEX_AGENT_IMAGE` to `craftslab/codex-agent:latest` for executing agents safely. The server container will spawn this image for each request.
 - Configures `CODEX_INSIGHT_IMAGE` to `craftslab/codex-insight:latest` for insight generation requests.
-- Sets `RUN_RESPONSE_TIMEOUT_SECONDS` in [docker-compose.yml](docker-compose.yml) (default `300`) to bound `POST /run` response time in container deployments.
+- Sets `RUN_RESPONSE_TIMEOUT_SECONDS` in [docker-compose.yml](docker-compose.yml) (default `300`) to bound `POST /agent/run` response time in container deployments.
 
 See [docker-compose.yml](docker-compose.yml) for details.
 
@@ -116,7 +116,7 @@ To verify Docker mode end-to-end (including `CODEX_AGENT_IMAGE`), run:
 
 This test now validates:
 - The agent image built from `codex.agent/Dockerfile` is Ubuntu-based and all supported agents are callable.
-- A `codex.serve` container built from this module's `Dockerfile` can execute `POST /run` requests by launching the configured `CODEX_AGENT_IMAGE`.
+- A `codex.serve` container built from this module's `Dockerfile` can execute `POST /agent/run` requests by launching the configured `CODEX_AGENT_IMAGE`.
 
 ### Example Script (`example.sh`)
 
@@ -132,7 +132,7 @@ You can override the target server with:
 BASE_URL="http://localhost:8000" ./example.sh
 ```
 
-The script sends `POST /run` with:
+The script sends `POST /agent/run` with:
 - `agent: "codex"`
 - `args: ["--model", "ollama-kimi-k2.5"]`
 - one text `contextFiles` item (`content`) and one base64 item (`base64Content`)
@@ -183,7 +183,7 @@ curl "http://localhost:8000/agents"
 }
 ```
 
-### `POST /run`
+### `POST /agent/run`
 
 Executes a agent command.
 
@@ -220,7 +220,7 @@ Executes a agent command.
 `sessionId` is optional:
 - If provided, it is used as the session identifier.
 - If omitted, `codex.serve` generates a UUID session ID.
-- If a session with the same ID is already running, `POST /run` returns `409`.
+- If a session with the same ID is already running, `POST /agent/run` returns `409`.
 
 **Response:**
 
@@ -236,7 +236,7 @@ The response is a stream of newline-delimited JSON objects (NDJSON).
 
 ### `POST /sessions/{sessionId}/stop`
 
-Stops an active `/run` session process.
+Stops an active `/agent/run` session process.
 
 **Example:**
 

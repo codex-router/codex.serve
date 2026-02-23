@@ -492,7 +492,7 @@ async def run_insight(req: InsightRunRequest):
         count=len(insight_files),
     )
 
-@app.post("/run")
+@app.post("/agent/run")
 async def run_agent(req: RunRequest):
     if req.agent not in AGENT_LIST:
         raise HTTPException(status_code=400, detail=f"Unsupported agent: {req.agent}")
