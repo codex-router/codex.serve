@@ -5,13 +5,19 @@ BASE_URL="${BASE_URL:-http://localhost:8000}"
 SESSION_ID="demo-$(date +%s)"
 REPO_PATH="${REPO_PATH:-$(pwd)}"
 DRY_RUN="${DRY_RUN:-true}"
+RUN_DATE="$(date +%Y%m%d-%H%M%S)"
+OUT_PATH="${OUT_PATH:-/tmp/codex-serve-example-out-${RUN_DATE}}"
 
-INSIGHT_PAYLOAD="$(mktemp)"
+INSIGHT_PAYLOAD="/tmp/codex-serve-insight-payload-${RUN_DATE}.json"
+INSIGHT_RESPONSE="/tmp/codex-serve-insight-response-${RUN_DATE}.json"
 
 cleanup() {
   rm -f "${INSIGHT_PAYLOAD}"
+  rm -f "${INSIGHT_RESPONSE}"
 }
 trap cleanup EXIT
+
+mkdir -p "${OUT_PATH}"
 
 echo "Testing POST ${BASE_URL}/agent/run with sessionId=${SESSION_ID}"
 echo "Expect NDJSON stream with: session/stdout|stderr/exit"
@@ -41,8 +47,10 @@ echo
 echo "Testing POST ${BASE_URL}/insight/run"
 echo "repoDirectory=${REPO_PATH}"
 echo "dryRun=${DRY_RUN}"
+echo "outPath=${OUT_PATH}"
+echo "payloadFile=${INSIGHT_PAYLOAD}"
 
-python3 - "${REPO_PATH}" "${DRY_RUN}" > "${INSIGHT_PAYLOAD}" <<'PY'
+python3 - "${REPO_PATH}" "${DRY_RUN}" "${OUT_PATH}" > "${INSIGHT_PAYLOAD}" <<'PY'
 import base64
 import json
 import os
@@ -50,6 +58,7 @@ import sys
 
 repo_path = os.path.abspath(sys.argv[1])
 dry_run = sys.argv[2].strip().lower() in {"1", "true", "yes", "y", "on"}
+out_path = os.path.abspath(sys.argv[3])
 
 files = []
 for root, _, names in os.walk(repo_path):
@@ -65,13 +74,44 @@ body = {
     "maxFilesPerModule": 40,
     "maxCharsPerFile": 10000,
     "dryRun": dry_run,
+    "outPath": out_path,
 }
 print(json.dumps(body))
 PY
 
 curl -sS -X POST "${BASE_URL}/insight/run" \
   -H "Content-Type: application/json" \
-  --data-binary "@${INSIGHT_PAYLOAD}"
+  --data-binary "@${INSIGHT_PAYLOAD}" \
+  -o "${INSIGHT_RESPONSE}"
+
+cat "${INSIGHT_RESPONSE}"
+
+python3 - "${INSIGHT_RESPONSE}" "${OUT_PATH}" <<'PY'
+import json
+import os
+import sys
+
+response_path = sys.argv[1]
+out_path = sys.argv[2]
+
+with open(response_path, "r", encoding="utf-8") as f:
+    data = json.load(f)
+
+files = data.get("files") or []
+for item in files:
+    name = item.get("path")
+    content = item.get("content", "")
+    if not name:
+        continue
+    target = os.path.join(out_path, name)
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    with open(target, "w", encoding="utf-8") as out_file:
+        out_file.write(content)
+
+print(f"materializedFiles={len(files)}")
+print(f"materializedOutPath={out_path}")
+print(f"serverOutputDir={data.get('outputDir', '')}")
+PY
 
 echo
-echo "Done. If successful, response includes stdout/stderr/exit_code and generated files from uploaded directory content."
+echo "Done. If successful, generated files are written to: ${OUT_PATH}"
