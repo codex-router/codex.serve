@@ -4,7 +4,7 @@ import json
 import codecs
 import base64
 from pathlib import Path
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Tuple
 from uuid import uuid4
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
@@ -45,8 +45,8 @@ class InsightFileResult(BaseModel):
 
 
 class InsightRunRequest(BaseModel):
-    repoPath: str
-    outPath: str
+    repoPath: Optional[str] = None
+    outPath: Optional[str] = None
     include: Optional[List[str]] = None
     exclude: Optional[List[str]] = None
     maxFilesPerModule: Optional[int] = None
@@ -109,6 +109,9 @@ RESPONSE_TIMEOUT_SECONDS = _parse_response_timeout_seconds(
 INSIGHT_RESPONSE_TIMEOUT_SECONDS = _parse_response_timeout_seconds(
     os.environ.get("INSIGHT_RESPONSE_TIMEOUT_SECONDS")
 )
+
+INSIGHT_DEFAULT_REPO_PATH = (os.environ.get("INSIGHT_DEFAULT_REPO_PATH") or "").strip()
+INSIGHT_DEFAULT_OUT_PATH = (os.environ.get("INSIGHT_DEFAULT_OUT_PATH") or "").strip()
 
 MAX_CONTEXT_FILES = 20
 MAX_CONTEXT_FILE_CHARS = 12_000
@@ -309,6 +312,31 @@ def _normalize_required_path(value: str, field_name: str) -> str:
     return os.path.abspath(normalized)
 
 
+def _resolve_insight_paths(req: InsightRunRequest) -> Tuple[str, str]:
+    repo_candidate = (req.repoPath or "").strip()
+    out_candidate = (req.outPath or "").strip()
+
+    if not repo_candidate:
+        if _is_running_in_docker_container() and INSIGHT_DEFAULT_REPO_PATH:
+            repo_candidate = INSIGHT_DEFAULT_REPO_PATH
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="repoPath is required (or set INSIGHT_DEFAULT_REPO_PATH when running codex.serve in Docker)",
+            )
+
+    repo_path = _normalize_required_path(repo_candidate, "repoPath")
+
+    if not out_candidate:
+        if _is_running_in_docker_container() and INSIGHT_DEFAULT_OUT_PATH:
+            out_candidate = INSIGHT_DEFAULT_OUT_PATH
+        else:
+            out_candidate = os.path.join(repo_path, "codex-insight-output")
+
+    out_path = _normalize_required_path(out_candidate, "outPath")
+    return repo_path, out_path
+
+
 def _host_path_to_container_path(host_path: str, mount_root: str) -> str:
     rel_path = os.path.relpath(host_path, mount_root)
     if rel_path == ".":
@@ -381,8 +409,7 @@ async def stop_session(sessionId: str):
 
 @app.post("/insight/run", response_model=InsightRunResponse)
 async def run_insight(req: InsightRunRequest):
-    repo_path = _normalize_required_path(req.repoPath, "repoPath")
-    out_path = _normalize_required_path(req.outPath, "outPath")
+    repo_path, out_path = _resolve_insight_paths(req)
 
     # In sibling-container mode (codex.serve running inside Docker while using
     # host Docker daemon), request paths are host paths and are not resolvable
