@@ -5,6 +5,7 @@ HTTP server implementation for the Codex Gerrit plugin. This service exposes a R
 ## Features
 
 - Exposes a `POST /run` endpoint to execute agent commands.
+- Exposes a `POST /insight/run` endpoint to execute `codex-insight` Docker jobs and return generated insight pages.
 - Exposes a `POST /sessions/{sessionId}/stop` endpoint to stop an active `/run` session.
 - Exposes a `GET /models` endpoint to return model IDs from `MODEL_LIST`.
 - Exposes a `GET /agents` endpoint to list supported agent names.
@@ -49,7 +50,10 @@ The server reads supported agents from `AGENT_LIST` (comma-separated). In local 
 | `MODEL_LIST` | *(empty)* | Returned model IDs for `GET /models` (comma-separated) |
 | `LITELLM_BASE_URL` | *(unset)* | Default LiteLLM base URL passed to execution container in Docker mode |
 | `LITELLM_API_KEY` | *(unset)* | Default LiteLLM API key passed to execution container in Docker mode |
+| `LITELLM_MODEL` | *(unset)* | Default model passed to `codex-insight` container when not provided in request `env` |
 | `RUN_RESPONSE_TIMEOUT_SECONDS` | *(unset)* | Optional timeout (seconds) for `POST /run`; `<= 0`, empty, or invalid disables timeout |
+| `CODEX_INSIGHT_IMAGE` | `craftslab/codex-insight:latest` | Docker image used by `POST /insight/run` |
+| `INSIGHT_RESPONSE_TIMEOUT_SECONDS` | *(unset)* | Optional timeout (seconds) for `POST /insight/run`; `<= 0`, empty, or invalid disables timeout |
 
 ### Docker Mode
 
@@ -96,6 +100,7 @@ This configuration:
 - Builds/Runs `codex.serve` (defined in `Dockerfile`) which has the Docker client installed.
 - Mounts the host's Docker socket (`/var/run/docker.sock`) so it can spawn sibling containers.
 - Configures `CODEX_AGENT_IMAGE` to `craftslab/codex-agent:latest` for executing agents safely. The server container will spawn this image for each request.
+- Configures `CODEX_INSIGHT_IMAGE` to `craftslab/codex-insight:latest` for insight generation requests.
 - Sets `RUN_RESPONSE_TIMEOUT_SECONDS` in [docker-compose.yml](docker-compose.yml) (default `300`) to bound `POST /run` response time in container deployments.
 
 See [docker-compose.yml](docker-compose.yml) for details.
@@ -255,4 +260,63 @@ If `RUN_RESPONSE_TIMEOUT_SECONDS` is configured and the timeout is reached befor
 {"type": "stderr", "data": "Request timed out while waiting for agent response (...s)."}
 {"type": "exit", "code": 124}
 ```
+
+### `POST /insight/run`
+
+Runs `codex-insight` in Docker using the same invocation style documented in `codex.insight/README.md`.
+
+`repoPath` and `outPath` are host paths. `codex.serve` mounts their common parent into `/workspace` and runs:
+
+```text
+docker run --rm \
+  -v <common-parent>:/workspace \
+  -e LITELLM_BASE_URL=... \
+  -e LITELLM_API_KEY=... \
+  -e LITELLM_MODEL=... \
+  <CODEX_INSIGHT_IMAGE> \
+  --repo /workspace/... \
+  --out /workspace/... [other optional flags]
+```
+
+**Request Body:**
+
+```json
+{
+  "repoPath": "/path/to/project",
+  "outPath": "/path/to/insight",
+  "include": ["src/**"],
+  "exclude": ["**/third_party/**"],
+  "maxFilesPerModule": 40,
+  "maxCharsPerFile": 10000,
+  "dryRun": false,
+  "env": {
+    "LITELLM_BASE_URL": "https://litellm.com/v1",
+    "LITELLM_API_KEY": "<your-api-key>",
+    "LITELLM_MODEL": "ollama-gemini-3-flash-preview"
+  }
+}
+```
+
+`env` is optional and can override `LITELLM_BASE_URL`, `LITELLM_API_KEY`, and `LITELLM_MODEL` inherited from `codex.serve`.
+
+**Response (success or tool failure):**
+
+```json
+{
+  "stdout": "...",
+  "stderr": "...",
+  "exit_code": 0,
+  "outputDir": "/path/to/insight",
+  "files": [
+    {
+      "path": "System-Architecture.md",
+      "content": "# System Architecture\n..."
+    }
+  ],
+  "count": 1
+}
+```
+
+- `files` contains top-level generated Markdown files from `outPath` when `exit_code` is `0`.
+- If timeout is configured via `INSIGHT_RESPONSE_TIMEOUT_SECONDS` and reached, endpoint returns `504`.
 

@@ -5,8 +5,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 AGENT_DIR="${ROOT_DIR}/codex.agent"
+INSIGHT_DIR="${ROOT_DIR}/codex.insight"
 
 AGENT_IMAGE_TAG="codex-agent:test"
+INSIGHT_IMAGE_TAG="codex-insight:test"
 SERVE_IMAGE_TAG="codex-serve:test"
 SERVE_CONTAINER_NAME="codex-serve-test"
 SERVE_PORT="18000"
@@ -16,10 +18,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "[1/5] Building agent Docker image from codex.agent: ${AGENT_IMAGE_TAG}"
+echo "[1/6] Building agent Docker image from codex.agent: ${AGENT_IMAGE_TAG}"
 docker build -t "${AGENT_IMAGE_TAG}" -f "${AGENT_DIR}/Dockerfile" "${AGENT_DIR}"
 
-echo "[2/5] Running agent image smoke tests in container"
+echo "[2/6] Running agent image smoke tests in container"
 docker run --rm "${AGENT_IMAGE_TAG}" bash -lc '
 set -euo pipefail
 
@@ -46,17 +48,22 @@ done
 echo "Agent image smoke tests passed."
 '
 
-echo "[3/5] Building codex.serve Docker image: ${SERVE_IMAGE_TAG}"
+echo "[3/6] Building codex-insight Docker image: ${INSIGHT_IMAGE_TAG}"
+docker build -t "${INSIGHT_IMAGE_TAG}" -f "${INSIGHT_DIR}/Dockerfile" "${INSIGHT_DIR}"
+
+echo "[4/6] Building codex.serve Docker image: ${SERVE_IMAGE_TAG}"
 docker build -t "${SERVE_IMAGE_TAG}" -f "${SCRIPT_DIR}/Dockerfile" "${SCRIPT_DIR}"
 
-echo "[4/5] Running codex.serve with CODEX_AGENT_IMAGE=${AGENT_IMAGE_TAG}"
+echo "[5/6] Running codex.serve with CODEX_AGENT_IMAGE=${AGENT_IMAGE_TAG} and CODEX_INSIGHT_IMAGE=${INSIGHT_IMAGE_TAG}"
 docker run -d \
 	--name "${SERVE_CONTAINER_NAME}" \
 	-p "${SERVE_PORT}:8000" \
 	-v /var/run/docker.sock:/var/run/docker.sock \
 	-e AGENT_LIST="codex,bash" \
 	-e CODEX_AGENT_IMAGE="${AGENT_IMAGE_TAG}" \
+	-e CODEX_INSIGHT_IMAGE="${INSIGHT_IMAGE_TAG}" \
 	-e RUN_RESPONSE_TIMEOUT_SECONDS="60" \
+	-e INSIGHT_RESPONSE_TIMEOUT_SECONDS="300" \
 	-e LITELLM_BASE_URL="http://litellm.test.local" \
 	-e LITELLM_API_KEY="test-api-key" \
 	"${SERVE_IMAGE_TAG}" >/dev/null
@@ -77,7 +84,7 @@ if [ "${ready}" -ne 1 ]; then
 	exit 1
 fi
 
-echo "[5/5] Testing codex.serve APIs (/agents, /models, /run)"
+echo "[6/6] Testing codex.serve APIs (/agents, /models, /run, /insight/run)"
 TMP_DIR="$(mktemp -d)"
 AGENTS_BODY="${TMP_DIR}/agents.json"
 MODELS_BODY="${TMP_DIR}/models.json"
@@ -86,6 +93,8 @@ CONTEXT_RUN_BODY="${TMP_DIR}/context-run.ndjson"
 CONTEXT_RUN_PAYLOAD="${TMP_DIR}/context-run.json"
 B64_CONTEXT_RUN_BODY="${TMP_DIR}/b64-context-run.ndjson"
 B64_CONTEXT_RUN_PAYLOAD="${TMP_DIR}/b64-context-run.json"
+INSIGHT_RUN_BODY="${TMP_DIR}/insight-run.json"
+INSIGHT_RUN_PAYLOAD="${TMP_DIR}/insight-run-payload.json"
 
 echo "- Testing GET /agents"
 AGENTS_STATUS="$(curl -sS -o "${AGENTS_BODY}" -w "%{http_code}" "http://127.0.0.1:${SERVE_PORT}/agents")"
@@ -369,6 +378,51 @@ if not exit_events:
 
 if not isinstance(exit_events[-1].get("code"), int):
 	raise SystemExit(f"stop-session run exit code is invalid: {exit_events[-1]}")
+PY
+
+echo "- Testing POST /insight/run (dry-run)"
+cat > "${INSIGHT_RUN_PAYLOAD}" <<JSON
+{
+  "repoPath": "${INSIGHT_DIR}",
+  "outPath": "${TMP_DIR}/insight-out",
+  "dryRun": true,
+  "include": ["**/*.py"]
+}
+JSON
+
+INSIGHT_STATUS="$(curl -sS -o "${INSIGHT_RUN_BODY}" -w "%{http_code}" \
+	-X POST "http://127.0.0.1:${SERVE_PORT}/insight/run" \
+	-H "Content-Type: application/json" \
+	--data-binary "@${INSIGHT_RUN_PAYLOAD}")"
+
+if [ "${INSIGHT_STATUS}" != "200" ]; then
+	echo "Expected HTTP 200 from /insight/run, got ${INSIGHT_STATUS}"
+	cat "${INSIGHT_RUN_BODY}"
+	exit 1
+fi
+
+python3 - "${INSIGHT_RUN_BODY}" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+	data = json.load(f)
+
+if data.get("exit_code") != 0:
+	raise SystemExit(f"/insight/run expected exit_code 0, got {data.get('exit_code')}")
+
+if not isinstance(data.get("stdout"), str):
+	raise SystemExit("/insight/run missing stdout text")
+
+if "Dry run enabled; no AI calls were made." not in data.get("stdout", ""):
+	raise SystemExit("/insight/run dry-run output missing expected marker")
+
+if data.get("count") != 0:
+	raise SystemExit(f"/insight/run dry-run expected count 0, got {data.get('count')}")
+
+files = data.get("files")
+if files != []:
+	raise SystemExit(f"/insight/run dry-run expected empty files, got {files}")
 PY
 
 rm -rf "${TMP_DIR}"

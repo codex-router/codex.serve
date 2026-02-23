@@ -3,6 +3,7 @@ import asyncio
 import json
 import codecs
 import base64
+from pathlib import Path
 from typing import List, Optional, Dict
 from uuid import uuid4
 from fastapi import FastAPI, HTTPException
@@ -37,6 +38,31 @@ class RunResponse(BaseModel):
     stderr: str
     exit_code: int
 
+
+class InsightFileResult(BaseModel):
+    path: str
+    content: str
+
+
+class InsightRunRequest(BaseModel):
+    repoPath: str
+    outPath: str
+    include: Optional[List[str]] = None
+    exclude: Optional[List[str]] = None
+    maxFilesPerModule: Optional[int] = None
+    maxCharsPerFile: Optional[int] = None
+    dryRun: bool = False
+    env: Optional[Dict[str, str]] = None
+
+
+class InsightRunResponse(BaseModel):
+    stdout: str
+    stderr: str
+    exit_code: int
+    outputDir: str
+    files: List[InsightFileResult]
+    count: int
+
 # Supported agent providers, configurable via env (comma-separated)
 DEFAULT_AGENT_LIST = ["codex"]
 AGENT_LIST = [
@@ -47,6 +73,7 @@ AGENT_LIST = [
 
 # Optional Docker configuration
 DOCKER_IMAGE = os.environ.get("CODEX_AGENT_IMAGE")
+INSIGHT_DOCKER_IMAGE = os.environ.get("CODEX_INSIGHT_IMAGE", "craftslab/codex-insight:latest")
 
 DEFAULT_MODEL_LIST = []
 MODEL_LIST = [
@@ -79,8 +106,14 @@ RESPONSE_TIMEOUT_SECONDS = _parse_response_timeout_seconds(
     os.environ.get("RUN_RESPONSE_TIMEOUT_SECONDS")
 )
 
+INSIGHT_RESPONSE_TIMEOUT_SECONDS = _parse_response_timeout_seconds(
+    os.environ.get("INSIGHT_RESPONSE_TIMEOUT_SECONDS")
+)
+
 MAX_CONTEXT_FILES = 20
 MAX_CONTEXT_FILE_CHARS = 12_000
+MAX_INSIGHT_FILES = 200
+MAX_INSIGHT_FILE_CHARS = 200_000
 
 
 def _resolve_context_file_content(item: ContextFileItem) -> Optional[str]:
@@ -264,6 +297,44 @@ async def _get_active_session_process(sessionId: str) -> Optional[asyncio.subpro
         return process
 
 
+def _normalize_required_path(value: str, field_name: str) -> str:
+    normalized = (value or "").strip()
+    if not normalized:
+        raise HTTPException(status_code=400, detail=f"{field_name} cannot be empty")
+    return os.path.abspath(normalized)
+
+
+def _host_path_to_container_path(host_path: str, mount_root: str) -> str:
+    rel_path = os.path.relpath(host_path, mount_root)
+    if rel_path == ".":
+        return "/workspace"
+    return "/workspace/" + rel_path.replace("\\", "/")
+
+
+def _collect_insight_files(output_dir: str) -> List[InsightFileResult]:
+    out_path = Path(output_dir)
+    if not out_path.exists() or not out_path.is_dir():
+        return []
+
+    results: List[InsightFileResult] = []
+    for page in sorted(out_path.glob("*.md")):
+        if len(results) >= MAX_INSIGHT_FILES:
+            break
+        try:
+            content = page.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if len(content) > MAX_INSIGHT_FILE_CHARS:
+            content = content[:MAX_INSIGHT_FILE_CHARS] + "\n\n[truncated by codex.serve return limit]\n"
+        results.append(
+            InsightFileResult(
+                path=page.name,
+                content=content,
+            )
+        )
+    return results
+
+
 @app.get("/models")
 async def get_models():
     return {
@@ -297,6 +368,108 @@ async def stop_session(sessionId: str):
         "sessionId": normalizedSessionId,
         "status": "stopped",
     }
+
+
+@app.post("/insight/run", response_model=InsightRunResponse)
+async def run_insight(req: InsightRunRequest):
+    repo_path = _normalize_required_path(req.repoPath, "repoPath")
+    out_path = _normalize_required_path(req.outPath, "outPath")
+
+    if not os.path.isdir(repo_path):
+        raise HTTPException(status_code=400, detail=f"repoPath is not a directory: {repo_path}")
+
+    out_parent = os.path.dirname(out_path) or os.path.sep
+    if not os.path.exists(out_parent):
+        raise HTTPException(status_code=400, detail=f"Parent directory for outPath does not exist: {out_parent}")
+
+    os.makedirs(out_path, exist_ok=True)
+
+    try:
+        mount_root = os.path.commonpath([repo_path, out_path])
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="repoPath and outPath must be on the same filesystem root for Docker volume mounting",
+        ) from exc
+
+    if not mount_root:
+        raise HTTPException(status_code=400, detail="Failed to determine common mount root")
+
+    container_repo = _host_path_to_container_path(repo_path, mount_root)
+    container_out = _host_path_to_container_path(out_path, mount_root)
+
+    docker_env: Dict[str, str] = {}
+    for env_key in ("LITELLM_BASE_URL", "LITELLM_API_KEY", "LITELLM_MODEL"):
+        env_val = os.environ.get(env_key)
+        if env_val:
+            docker_env[env_key] = env_val
+    docker_env.update(req.env or {})
+
+    command = [
+        "docker",
+        "run",
+        "--rm",
+        "-v",
+        f"{mount_root}:/workspace",
+    ]
+
+    for env_key, env_val in docker_env.items():
+        command.extend(["-e", f"{env_key}={env_val}"])
+
+    command.append(INSIGHT_DOCKER_IMAGE)
+    command.extend(["--repo", container_repo, "--out", container_out])
+
+    for pattern in req.include or []:
+        command.extend(["--include", pattern])
+
+    for pattern in req.exclude or []:
+        command.extend(["--exclude", pattern])
+
+    if req.maxFilesPerModule is not None:
+        command.extend(["--max-files-per-module", str(req.maxFilesPerModule)])
+
+    if req.maxCharsPerFile is not None:
+        command.extend(["--max-chars-per-file", str(req.maxCharsPerFile)])
+
+    if req.dryRun:
+        command.append("--dry-run")
+
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+    try:
+        if INSIGHT_RESPONSE_TIMEOUT_SECONDS is not None:
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                process.communicate(),
+                timeout=INSIGHT_RESPONSE_TIMEOUT_SECONDS,
+            )
+        else:
+            stdout_bytes, stderr_bytes = await process.communicate()
+    except asyncio.TimeoutError as exc:
+        await _terminate_process(process)
+        raise HTTPException(
+            status_code=504,
+            detail=(
+                "Request timed out while waiting for codex-insight response "
+                f"({INSIGHT_RESPONSE_TIMEOUT_SECONDS}s)."
+            ),
+        ) from exc
+
+    stdout_text = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
+    stderr_text = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
+    insight_files = _collect_insight_files(out_path) if process.returncode == 0 else []
+
+    return InsightRunResponse(
+        stdout=stdout_text,
+        stderr=stderr_text,
+        exit_code=process.returncode if process.returncode is not None else 1,
+        outputDir=out_path,
+        files=insight_files,
+        count=len(insight_files),
+    )
 
 @app.post("/run")
 async def run_agent(req: RunRequest):

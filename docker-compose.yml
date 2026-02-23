@@ -9,6 +9,8 @@ services:
     environment:
       # Tell codex.serve to use the agent docker image
       - CODEX_AGENT_IMAGE=craftslab/codex-agent:latest
+      # Tell codex.serve to use the insight docker image
+      - CODEX_INSIGHT_IMAGE=craftslab/codex-insight:latest
       # Supported agent providers (comma-separated)
       - AGENT_LIST=claude,codex,gemini,opencode,qwen
       # Supported model IDs (comma-separated)
@@ -16,5 +18,8 @@ services:
       # LiteLLM endpoint and credentials
       - LITELLM_BASE_URL=${LITELLM_BASE_URL}
       - LITELLM_API_KEY=${LITELLM_API_KEY}
+      - LITELLM_MODEL=${LITELLM_MODEL:-ollama-gemini-3-flash-preview}
       # /run response timeout in seconds (0 or empty disables timeout)
       - RUN_RESPONSE_TIMEOUT_SECONDS=${RUN_RESPONSE_TIMEOUT_SECONDS:-300}
+      # /insight/run response timeout in seconds (0 or empty disables timeout)
+      - INSIGHT_RESPONSE_TIMEOUT_SECONDS=${INSIGHT_RESPONSE_TIMEOUT_SECONDS:-1200}
