@@ -289,7 +289,9 @@ docker rm -f <container>
 
 When `CODEX_INSIGHT_IMAGE` is `craftslab/codex-insight:latest` (or `codex-insight:latest`), `codex.serve` resolves that `LITELLM_MODEL` value from `INSIGHT_MODEL` instead of `LITELLM_MODEL`.
 
-`outPath` is optional and only controls the response metadata value; uploaded-file flow always uses server-side temporary paths for container execution.
+`outPath` is optional:
+- If provided, generated insight files are persisted to that host path and returned in `outputDir`.
+- If omitted, `codex.serve` creates a server-side temp output directory, persists generated files there, and returns that path in `outputDir`.
 
 **Request Body:**
 
@@ -343,6 +345,6 @@ When `CODEX_INSIGHT_IMAGE` is `craftslab/codex-insight:latest` (or `codex-insigh
 }
 ```
 
-- `files` contains top-level generated Markdown files from `outPath` when `exit_code` is `0`.
+- `files` contains top-level generated Markdown files from `outputDir` when `exit_code` is `0`.
 - If timeout is configured via `INSIGHT_RESPONSE_TIMEOUT_SECONDS` and reached, endpoint returns `504`.
 

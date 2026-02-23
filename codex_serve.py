@@ -318,6 +318,27 @@ def _normalize_required_path(value: str, field_name: str) -> str:
     return os.path.abspath(normalized)
 
 
+def _resolve_requested_output_dir(req: InsightRunRequest) -> Optional[str]:
+    candidates = [req.outPath, req.out_path, req.outputDir, req.output_dir]
+    for candidate in candidates:
+        if candidate and candidate.strip():
+            return os.path.abspath(candidate.strip())
+    return None
+
+
+def _copy_tree_contents(source_dir: str, destination_dir: str) -> None:
+    source = Path(source_dir)
+    destination = Path(destination_dir)
+    destination.mkdir(parents=True, exist_ok=True)
+
+    for item in source.iterdir():
+        target = destination / item.name
+        if item.is_dir():
+            shutil.copytree(item, target, dirs_exist_ok=True)
+        else:
+            shutil.copy2(item, target)
+
+
 def _host_path_to_container_path(host_path: str, mount_root: str) -> str:
     rel_path = os.path.relpath(host_path, mount_root)
     if rel_path == ".":
@@ -475,6 +496,12 @@ async def run_insight(req: InsightRunRequest):
     if len(uploaded_files) == 0:
         raise HTTPException(status_code=400, detail="files is required")
 
+    requested_output_dir = _resolve_requested_output_dir(req)
+    if requested_output_dir:
+        response_output_dir = requested_output_dir
+    else:
+        response_output_dir = tempfile.mkdtemp(prefix="codex-insight-out-")
+
     docker_env: Dict[str, str] = {}
     for env_key in ("LITELLM_BASE_URL", "LITELLM_API_KEY"):
         env_val = os.environ.get(env_key)
@@ -499,9 +526,9 @@ async def run_insight(req: InsightRunRequest):
             docker_env["LITELLM_MODEL"] = configured_model
     temp_root = tempfile.mkdtemp(prefix="codex-insight-upload-")
     repo_path = os.path.join(temp_root, "repo")
-    out_path = os.path.join(temp_root, "out")
+    transient_out_path = os.path.join(temp_root, "out")
     os.makedirs(repo_path, exist_ok=True)
-    os.makedirs(out_path, exist_ok=True)
+    os.makedirs(transient_out_path, exist_ok=True)
 
     try:
         written_count = _write_uploaded_repo_files(repo_path, uploaded_files)
@@ -542,11 +569,20 @@ async def run_insight(req: InsightRunRequest):
 
             if run_code == 0:
                 cp_out_code, _, cp_out_stderr = await _run_subprocess_capture(
-                    ["docker", "cp", f"{container_name}:{container_out}{os.sep}.", out_path]
+                    ["docker", "cp", f"{container_name}:{container_out}{os.sep}.", transient_out_path]
                 )
                 if cp_out_code != 0:
                     raise HTTPException(status_code=400, detail=cp_out_stderr.strip() or "Failed to collect insight output")
-            insight_files = _collect_insight_files(out_path) if run_code == 0 else []
+
+                try:
+                    _copy_tree_contents(transient_out_path, response_output_dir)
+                except OSError as exc:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Failed to write insight output directory: {exc}",
+                    ) from exc
+
+            insight_files = _collect_insight_files(response_output_dir) if run_code == 0 else []
         finally:
             await _run_subprocess_capture(["docker", "rm", "-f", container_name])
     finally:
@@ -556,7 +592,7 @@ async def run_insight(req: InsightRunRequest):
         stdout=stdout_text,
         stderr=stderr_text,
         exit_code=run_code,
-        outputDir=out_path,
+        outputDir=response_output_dir,
         files=insight_files,
         count=len(insight_files),
     )
