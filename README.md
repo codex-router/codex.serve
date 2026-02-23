@@ -54,8 +54,6 @@ The server reads supported agents from `AGENT_LIST` (comma-separated). In local 
 | `INSIGHT_MODEL` | *(unset)* | Default model used for `POST /insight/run` when `CODEX_INSIGHT_IMAGE` is `craftslab/codex-insight:latest` (mapped to container `LITELLM_MODEL`) |
 | `RUN_RESPONSE_TIMEOUT_SECONDS` | *(unset)* | Optional timeout (seconds) for `POST /agent/run`; `<= 0`, empty, or invalid disables timeout |
 | `CODEX_INSIGHT_IMAGE` | `craftslab/codex-insight:latest` | Docker image used by `POST /insight/run` |
-| `INSIGHT_DEFAULT_REPO_PATH` | *(unset)* | Default host repo path for `POST /insight/run` when `repoPath` is omitted and `codex.serve` runs in Docker |
-| `INSIGHT_DEFAULT_OUT_PATH` | *(unset)* | Default host output path for `POST /insight/run` when `outPath` is omitted and `codex.serve` runs in Docker |
 | `INSIGHT_RESPONSE_TIMEOUT_SECONDS` | *(unset)* | Optional timeout (seconds) for `POST /insight/run`; `<= 0`, empty, or invalid disables timeout |
 
 ### Docker Mode
@@ -283,8 +281,7 @@ docker run --rm \
 
 When `CODEX_INSIGHT_IMAGE` is `craftslab/codex-insight:latest` (or `codex-insight:latest`), `codex.serve` resolves that `LITELLM_MODEL` value from `INSIGHT_MODEL` instead of `LITELLM_MODEL`.
 
-When `codex.serve` is running inside Docker, `repoPath` can be omitted if `INSIGHT_DEFAULT_REPO_PATH` is configured.
-When `outPath` is omitted, `codex.serve` uses `INSIGHT_DEFAULT_OUT_PATH` (if set) or defaults to `<repoPath>/codex-insight-output`.
+When `outPath` is omitted, `codex.serve` defaults it to `<repoPath>/codex-insight-output`.
 
 **Request Body:**
 
@@ -305,7 +302,7 @@ When `outPath` is omitted, `codex.serve` uses `INSIGHT_DEFAULT_OUT_PATH` (if set
 }
 ```
 
-`repoPath` is optional only for Docker deployments with `INSIGHT_DEFAULT_REPO_PATH` configured.
+`repoPath` is required.
 `outPath` is optional and defaults as described above.
 
 `env` is optional and can override `LITELLM_BASE_URL`, `LITELLM_API_KEY`, and model selection inherited from `codex.serve`:

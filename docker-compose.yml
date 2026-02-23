@@ -16,9 +16,6 @@ services:
       # Supported model IDs (comma-separated)
       - AGENT_MODEL=ollama-kimi-k2.5,ollama-minimax-m2.5,ollama-qwen3-coder
       - INSIGHT_MODEL=ollama-gemini-3-flash-preview
-      # Optional defaults for /insight/run when request omits repoPath/outPath
-      - INSIGHT_DEFAULT_REPO_PATH=${INSIGHT_DEFAULT_REPO_PATH:-}
-      - INSIGHT_DEFAULT_OUT_PATH=${INSIGHT_DEFAULT_OUT_PATH:-}
       # LiteLLM endpoint and credentials
       - LITELLM_BASE_URL=${LITELLM_BASE_URL}
       - LITELLM_API_KEY=${LITELLM_API_KEY}
