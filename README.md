@@ -266,29 +266,45 @@ If `RUN_RESPONSE_TIMEOUT_SECONDS` is configured and the timeout is reached befor
 
 Runs `codex-insight` in Docker using the same invocation style documented in `codex.insight/README.md`.
 
-`repoPath` and `outPath` are host paths. `codex.serve` mounts their common parent into `/workspace` and runs:
+`files` contains the selected repository files uploaded by client UI. `codex.serve` creates a temporary repository directory, writes uploaded files into it, then runs `codex-insight` in Docker.
+
+The uploaded `path` values are treated as repository-relative paths.
+
+Execution shape:
 
 ```text
-docker run --rm \
-  -v <common-parent>:/workspace \
+docker create --name <container> \
   -e LITELLM_BASE_URL=... \
   -e LITELLM_API_KEY=... \
   -e LITELLM_MODEL=... \
   <CODEX_INSIGHT_IMAGE> \
-  --repo /workspace/... \
-  --out /workspace/... [other optional flags]
+  --repo /tmp/codex-repo \
+  --out /tmp/codex-out [other optional flags]
+
+docker cp <uploaded-repo-dir>/. <container>:/tmp/codex-repo
+docker start -a <container>
+docker cp <container>:/tmp/codex-out/. <server-temp-out-dir>
+docker rm -f <container>
 ```
 
 When `CODEX_INSIGHT_IMAGE` is `craftslab/codex-insight:latest` (or `codex-insight:latest`), `codex.serve` resolves that `LITELLM_MODEL` value from `INSIGHT_MODEL` instead of `LITELLM_MODEL`.
 
-When `outPath` is omitted, `codex.serve` defaults it to `<repoPath>/codex-insight-output`.
+`outPath` is optional and only controls the response metadata value; uploaded-file flow always uses server-side temporary paths for container execution.
 
 **Request Body:**
 
 ```json
 {
-  "repoPath": "/path/to/project",
-  "outPath": "/path/to/insight",
+  "files": [
+    {
+      "path": "src/main.py",
+      "base64Content": "<base64-file-content>"
+    },
+    {
+      "path": "README.md",
+      "content": "# project"
+    }
+  ],
   "include": ["src/**"],
   "exclude": ["**/third_party/**"],
   "maxFilesPerModule": 40,
@@ -302,8 +318,8 @@ When `outPath` is omitted, `codex.serve` defaults it to `<repoPath>/codex-insigh
 }
 ```
 
-`repoPath` is required.
-`outPath` is optional and defaults as described above.
+`files` is required.
+`outPath` is optional.
 
 `env` is optional and can override `LITELLM_BASE_URL`, `LITELLM_API_KEY`, and model selection inherited from `codex.serve`:
 - For `craftslab/codex-insight:latest` (or `codex-insight:latest`), set `INSIGHT_MODEL`.

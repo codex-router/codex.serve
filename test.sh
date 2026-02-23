@@ -381,14 +381,31 @@ if not isinstance(exit_events[-1].get("code"), int):
 PY
 
 echo "- Testing POST /insight/run (dry-run)"
-cat > "${INSIGHT_RUN_PAYLOAD}" <<JSON
-{
-  "repoPath": "${INSIGHT_DIR}",
-  "outPath": "${TMP_DIR}/insight-out",
-  "dryRun": true,
-  "include": ["**/*.py"]
+python3 - "${INSIGHT_DIR}" > "${INSIGHT_RUN_PAYLOAD}" <<'PY'
+import base64
+import json
+import os
+import sys
+
+repo_dir = os.path.abspath(sys.argv[1])
+
+files = []
+for root, _, names in os.walk(repo_dir):
+	for name in names:
+		abs_path = os.path.join(root, name)
+		rel_path = os.path.relpath(abs_path, repo_dir).replace("\\", "/")
+		with open(abs_path, "rb") as f:
+			payload = base64.b64encode(f.read()).decode("ascii")
+		files.append({"path": rel_path, "base64Content": payload})
+
+body = {
+	"files": files,
+	"dryRun": True,
+	"include": ["**/*.py"],
 }
-JSON
+
+print(json.dumps(body))
+PY
 
 INSIGHT_STATUS="$(curl -sS -o "${INSIGHT_RUN_BODY}" -w "%{http_code}" \
 	-X POST "http://127.0.0.1:${SERVE_PORT}/insight/run" \

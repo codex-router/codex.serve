@@ -4,10 +4,14 @@ set -euo pipefail
 BASE_URL="${BASE_URL:-http://localhost:8000}"
 SESSION_ID="demo-$(date +%s)"
 REPO_PATH="${REPO_PATH:-$(pwd)}"
-OUT_PATH="${OUT_PATH:-/tmp/codex-insight-$(date +%s)}"
 DRY_RUN="${DRY_RUN:-true}"
 
-mkdir -p "${OUT_PATH}"
+INSIGHT_PAYLOAD="$(mktemp)"
+
+cleanup() {
+  rm -f "${INSIGHT_PAYLOAD}"
+}
+trap cleanup EXIT
 
 echo "Testing POST ${BASE_URL}/agent/run with sessionId=${SESSION_ID}"
 echo "Expect NDJSON stream with: session/stdout|stderr/exit"
@@ -35,21 +39,39 @@ EOF
 
 echo
 echo "Testing POST ${BASE_URL}/insight/run"
-echo "repoPath=${REPO_PATH}"
-echo "outPath=${OUT_PATH}"
+echo "repoDirectory=${REPO_PATH}"
 echo "dryRun=${DRY_RUN}"
+
+python3 - "${REPO_PATH}" "${DRY_RUN}" > "${INSIGHT_PAYLOAD}" <<'PY'
+import base64
+import json
+import os
+import sys
+
+repo_path = os.path.abspath(sys.argv[1])
+dry_run = sys.argv[2].strip().lower() in {"1", "true", "yes", "y", "on"}
+
+files = []
+for root, _, names in os.walk(repo_path):
+    for name in names:
+        abs_path = os.path.join(root, name)
+        rel_path = os.path.relpath(abs_path, repo_path).replace("\\", "/")
+        with open(abs_path, "rb") as f:
+            payload = base64.b64encode(f.read()).decode("ascii")
+        files.append({"path": rel_path, "base64Content": payload})
+
+body = {
+    "files": files,
+    "maxFilesPerModule": 40,
+    "maxCharsPerFile": 10000,
+    "dryRun": dry_run,
+}
+print(json.dumps(body))
+PY
 
 curl -sS -X POST "${BASE_URL}/insight/run" \
   -H "Content-Type: application/json" \
-  --data-binary @- <<EOF
-{
-  "repoPath": "${REPO_PATH}",
-  "outPath": "${OUT_PATH}",
-  "maxFilesPerModule": 40,
-  "maxCharsPerFile": 10000,
-  "dryRun": ${DRY_RUN}
-}
-EOF
+  --data-binary "@${INSIGHT_PAYLOAD}"
 
 echo
-echo "Done. If successful, response includes stdout/stderr/exit_code and generated files from outPath."
+echo "Done. If successful, response includes stdout/stderr/exit_code and generated files from uploaded directory content."

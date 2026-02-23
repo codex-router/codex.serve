@@ -3,6 +3,8 @@ import asyncio
 import json
 import codecs
 import base64
+import shutil
+import tempfile
 from pathlib import Path
 from typing import List, Optional, Dict
 from uuid import uuid4
@@ -45,8 +47,15 @@ class InsightFileResult(BaseModel):
 
 
 class InsightRunRequest(BaseModel):
-    repoPath: str
+    repoPath: Optional[str] = None
+    repo_path: Optional[str] = None
+    repo: Optional[str] = None
+    workspaceRoot: Optional[str] = None
     outPath: Optional[str] = None
+    out_path: Optional[str] = None
+    outputDir: Optional[str] = None
+    output_dir: Optional[str] = None
+    files: Optional[List[ContextFileItem]] = None
     include: Optional[List[str]] = None
     exclude: Optional[List[str]] = None
     maxFilesPerModule: Optional[int] = None
@@ -344,6 +353,87 @@ def _collect_insight_files(output_dir: str) -> List[InsightFileResult]:
     return results
 
 
+def _normalize_repo_file_path(path: str) -> str:
+    normalized = (path or "").strip().replace("\\", "/")
+    normalized = normalized.lstrip("/")
+    if not normalized:
+        return ""
+    parts = [part for part in normalized.split("/") if part not in ("", ".")]
+    if not parts or any(part == ".." for part in parts):
+        return ""
+    return "/".join(parts)
+
+
+def _resolve_context_file_bytes(item: ContextFileItem) -> Optional[bytes]:
+    if item.base64Content:
+        try:
+            return base64.b64decode(item.base64Content)
+        except Exception:
+            return None
+    if item.content is not None:
+        return item.content.encode("utf-8", errors="replace")
+    return b""
+
+
+def _write_uploaded_repo_files(repo_dir: str, files: List[ContextFileItem]) -> int:
+    written = 0
+    for item in files:
+        if item is None:
+            continue
+        rel_path = _normalize_repo_file_path(item.path)
+        if not rel_path:
+            continue
+        payload = _resolve_context_file_bytes(item)
+        if payload is None:
+            continue
+        destination = Path(repo_dir) / rel_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(payload)
+        written += 1
+    return written
+
+
+async def _run_subprocess_capture(
+    command: List[str],
+    timeout: Optional[float] = None,
+    timeout_message: Optional[str] = None,
+) -> tuple[int, str, str]:
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        if timeout is not None:
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(process.communicate(), timeout=timeout)
+        else:
+            stdout_bytes, stderr_bytes = await process.communicate()
+    except asyncio.TimeoutError as exc:
+        await _terminate_process(process)
+        if timeout_message:
+            raise HTTPException(status_code=504, detail=timeout_message) from exc
+        raise
+
+    stdout_text = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
+    stderr_text = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
+    return process.returncode if process.returncode is not None else 1, stdout_text, stderr_text
+
+
+def _build_insight_args(req: InsightRunRequest) -> List[str]:
+    args: List[str] = []
+    for pattern in req.include or []:
+        args.extend(["--include", pattern])
+    for pattern in req.exclude or []:
+        args.extend(["--exclude", pattern])
+    if req.maxFilesPerModule is not None:
+        args.extend(["--max-files-per-module", str(req.maxFilesPerModule)])
+    if req.maxCharsPerFile is not None:
+        args.extend(["--max-chars-per-file", str(req.maxCharsPerFile)])
+    if req.dryRun:
+        args.append("--dry-run")
+    return args
+
+
 @app.get("/models")
 async def get_models():
     return {
@@ -381,37 +471,9 @@ async def stop_session(sessionId: str):
 
 @app.post("/insight/run", response_model=InsightRunResponse)
 async def run_insight(req: InsightRunRequest):
-    repo_path = _normalize_required_path(req.repoPath, "repoPath")
-    out_candidate = (req.outPath or "").strip() or os.path.join(repo_path, "codex-insight-output")
-    out_path = _normalize_required_path(out_candidate, "outPath")
-
-    # In sibling-container mode (codex.serve running inside Docker while using
-    # host Docker daemon), request paths are host paths and are not resolvable
-    # in the codex.serve container filesystem. In that case, defer path
-    # validation to the spawned codex-insight container on the host daemon.
-    if not _is_running_in_docker_container():
-        if not os.path.isdir(repo_path):
-            raise HTTPException(status_code=400, detail=f"repoPath is not a directory: {repo_path}")
-
-        out_parent = os.path.dirname(out_path) or os.path.sep
-        if not os.path.exists(out_parent):
-            raise HTTPException(status_code=400, detail=f"Parent directory for outPath does not exist: {out_parent}")
-
-        os.makedirs(out_path, exist_ok=True)
-
-    try:
-        mount_root = os.path.commonpath([repo_path, out_path])
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=400,
-            detail="repoPath and outPath must be on the same filesystem root for Docker volume mounting",
-        ) from exc
-
-    if not mount_root:
-        raise HTTPException(status_code=400, detail="Failed to determine common mount root")
-
-    container_repo = _host_path_to_container_path(repo_path, mount_root)
-    container_out = _host_path_to_container_path(out_path, mount_root)
+    uploaded_files = req.files or []
+    if len(uploaded_files) == 0:
+        raise HTTPException(status_code=400, detail="files is required")
 
     docker_env: Dict[str, str] = {}
     for env_key in ("LITELLM_BASE_URL", "LITELLM_API_KEY"):
@@ -435,68 +497,65 @@ async def run_insight(req: InsightRunRequest):
         configured_model = (os.environ.get("LITELLM_MODEL") or "").strip()
         if configured_model and "LITELLM_MODEL" not in request_env:
             docker_env["LITELLM_MODEL"] = configured_model
-
-    command = [
-        "docker",
-        "run",
-        "--rm",
-        "-v",
-        f"{mount_root}:/workspace",
-    ]
-
-    for env_key, env_val in docker_env.items():
-        command.extend(["-e", f"{env_key}={env_val}"])
-
-    command.append(INSIGHT_DOCKER_IMAGE)
-    command.extend(["--repo", container_repo, "--out", container_out])
-
-    for pattern in req.include or []:
-        command.extend(["--include", pattern])
-
-    for pattern in req.exclude or []:
-        command.extend(["--exclude", pattern])
-
-    if req.maxFilesPerModule is not None:
-        command.extend(["--max-files-per-module", str(req.maxFilesPerModule)])
-
-    if req.maxCharsPerFile is not None:
-        command.extend(["--max-chars-per-file", str(req.maxCharsPerFile)])
-
-    if req.dryRun:
-        command.append("--dry-run")
-
-    process = await asyncio.create_subprocess_exec(
-        *command,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+    temp_root = tempfile.mkdtemp(prefix="codex-insight-upload-")
+    repo_path = os.path.join(temp_root, "repo")
+    out_path = os.path.join(temp_root, "out")
+    os.makedirs(repo_path, exist_ok=True)
+    os.makedirs(out_path, exist_ok=True)
 
     try:
-        if INSIGHT_RESPONSE_TIMEOUT_SECONDS is not None:
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                process.communicate(),
-                timeout=INSIGHT_RESPONSE_TIMEOUT_SECONDS,
+        written_count = _write_uploaded_repo_files(repo_path, uploaded_files)
+        if written_count == 0:
+            raise HTTPException(status_code=400, detail="No valid files were provided")
+
+        container_name = f"codex-insight-{uuid4().hex}"
+        container_repo = "/tmp/codex-repo"
+        container_out = "/tmp/codex-out"
+
+        create_command = ["docker", "create", "--name", container_name]
+        for env_key, env_val in docker_env.items():
+            create_command.extend(["-e", f"{env_key}={env_val}"])
+        create_command.append(INSIGHT_DOCKER_IMAGE)
+        create_command.extend(["--repo", container_repo, "--out", container_out])
+        create_command.extend(_build_insight_args(req))
+
+        create_code, _, create_stderr = await _run_subprocess_capture(create_command)
+        if create_code != 0:
+            raise HTTPException(status_code=400, detail=create_stderr.strip() or "Failed to prepare insight container")
+
+        try:
+            cp_in_code, _, cp_in_stderr = await _run_subprocess_capture(
+                ["docker", "cp", f"{repo_path}{os.sep}.", f"{container_name}:{container_repo}"]
             )
-        else:
-            stdout_bytes, stderr_bytes = await process.communicate()
-    except asyncio.TimeoutError as exc:
-        await _terminate_process(process)
-        raise HTTPException(
-            status_code=504,
-            detail=(
+            if cp_in_code != 0:
+                raise HTTPException(status_code=400, detail=cp_in_stderr.strip() or "Failed to upload files to insight container")
+
+            timeout_message = (
                 "Request timed out while waiting for codex-insight response "
                 f"({INSIGHT_RESPONSE_TIMEOUT_SECONDS}s)."
-            ),
-        ) from exc
+            )
+            run_code, stdout_text, stderr_text = await _run_subprocess_capture(
+                ["docker", "start", "-a", container_name],
+                timeout=INSIGHT_RESPONSE_TIMEOUT_SECONDS,
+                timeout_message=timeout_message,
+            )
 
-    stdout_text = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
-    stderr_text = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
-    insight_files = _collect_insight_files(out_path) if process.returncode == 0 else []
+            if run_code == 0:
+                cp_out_code, _, cp_out_stderr = await _run_subprocess_capture(
+                    ["docker", "cp", f"{container_name}:{container_out}{os.sep}.", out_path]
+                )
+                if cp_out_code != 0:
+                    raise HTTPException(status_code=400, detail=cp_out_stderr.strip() or "Failed to collect insight output")
+            insight_files = _collect_insight_files(out_path) if run_code == 0 else []
+        finally:
+            await _run_subprocess_capture(["docker", "rm", "-f", container_name])
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
 
     return InsightRunResponse(
         stdout=stdout_text,
         stderr=stderr_text,
-        exit_code=process.returncode if process.returncode is not None else 1,
+        exit_code=run_code,
         outputDir=out_path,
         files=insight_files,
         count=len(insight_files),
