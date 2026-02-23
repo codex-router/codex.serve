@@ -316,6 +316,10 @@ def _host_path_to_container_path(host_path: str, mount_root: str) -> str:
     return "/workspace/" + rel_path.replace("\\", "/")
 
 
+def _is_running_in_docker_container() -> bool:
+    return os.path.exists("/.dockerenv")
+
+
 def _collect_insight_files(output_dir: str) -> List[InsightFileResult]:
     out_path = Path(output_dir)
     if not out_path.exists() or not out_path.is_dir():
@@ -380,14 +384,19 @@ async def run_insight(req: InsightRunRequest):
     repo_path = _normalize_required_path(req.repoPath, "repoPath")
     out_path = _normalize_required_path(req.outPath, "outPath")
 
-    if not os.path.isdir(repo_path):
-        raise HTTPException(status_code=400, detail=f"repoPath is not a directory: {repo_path}")
+    # In sibling-container mode (codex.serve running inside Docker while using
+    # host Docker daemon), request paths are host paths and are not resolvable
+    # in the codex.serve container filesystem. In that case, defer path
+    # validation to the spawned codex-insight container on the host daemon.
+    if not _is_running_in_docker_container():
+        if not os.path.isdir(repo_path):
+            raise HTTPException(status_code=400, detail=f"repoPath is not a directory: {repo_path}")
 
-    out_parent = os.path.dirname(out_path) or os.path.sep
-    if not os.path.exists(out_parent):
-        raise HTTPException(status_code=400, detail=f"Parent directory for outPath does not exist: {out_parent}")
+        out_parent = os.path.dirname(out_path) or os.path.sep
+        if not os.path.exists(out_parent):
+            raise HTTPException(status_code=400, detail=f"Parent directory for outPath does not exist: {out_parent}")
 
-    os.makedirs(out_path, exist_ok=True)
+        os.makedirs(out_path, exist_ok=True)
 
     try:
         mount_root = os.path.commonpath([repo_path, out_path])
