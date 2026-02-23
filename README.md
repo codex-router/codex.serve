@@ -7,7 +7,7 @@ HTTP server implementation for the Codex Gerrit plugin. This service exposes a R
 - Exposes a `POST /run` endpoint to execute agent commands.
 - Exposes a `POST /insight/run` endpoint to execute `codex-insight` Docker jobs and return generated insight pages.
 - Exposes a `POST /sessions/{sessionId}/stop` endpoint to stop an active `/run` session.
-- Exposes a `GET /models` endpoint to return model IDs from `MODEL_LIST`.
+- Exposes a `GET /models` endpoint to return model IDs from `AGENT_MODEL`.
 - Exposes a `GET /agents` endpoint to list supported agent names.
 - Supports streaming output via newline-delimited JSON (NDJSON).
 - Supports a configurable agent allowlist via `AGENT_LIST`.
@@ -47,7 +47,7 @@ The server reads supported agents from `AGENT_LIST` (comma-separated). In local 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AGENT_LIST` | `codex` | Supported agent names (comma-separated) |
-| `MODEL_LIST` | *(empty)* | Returned model IDs for `GET /models` (comma-separated) |
+| `AGENT_MODEL` | *(empty)* | Returned model IDs for `GET /models` (comma-separated) |
 | `LITELLM_BASE_URL` | *(unset)* | Default LiteLLM base URL passed to execution container in Docker mode |
 | `LITELLM_API_KEY` | *(unset)* | Default LiteLLM API key passed to execution container in Docker mode |
 | `LITELLM_MODEL` | *(unset)* | Default model for `POST /run`, and for `POST /insight/run` when using a custom `CODEX_INSIGHT_IMAGE` |
@@ -145,9 +145,9 @@ If response timeout is configured server-side and reached, the stream may end wi
 
 ### `GET /models`
 
-Returns model IDs from `MODEL_LIST`.
+Returns model IDs from `AGENT_MODEL`.
 
-If `MODEL_LIST` is unset, the default is `[]`.
+If `AGENT_MODEL` is unset, the default is `[]`.
 
 **Example:**
 

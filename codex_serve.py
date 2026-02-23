@@ -75,10 +75,10 @@ AGENT_LIST = [
 DOCKER_IMAGE = os.environ.get("CODEX_AGENT_IMAGE")
 INSIGHT_DOCKER_IMAGE = os.environ.get("CODEX_INSIGHT_IMAGE", "craftslab/codex-insight:latest")
 
-DEFAULT_MODEL_LIST = []
-MODEL_LIST = [
+DEFAULT_AGENT_MODEL = []
+AGENT_MODEL = [
     model.strip()
-    for model in os.environ.get("MODEL_LIST", ",".join(DEFAULT_MODEL_LIST)).split(",")
+    for model in os.environ.get("AGENT_MODEL", ",".join(DEFAULT_AGENT_MODEL)).split(",")
     if model.strip()
 ]
 
@@ -343,8 +343,8 @@ def _collect_insight_files(output_dir: str) -> List[InsightFileResult]:
 @app.get("/models")
 async def get_models():
     return {
-        "models": MODEL_LIST,
-        "count": len(MODEL_LIST),
+        "models": AGENT_MODEL,
+        "count": len(AGENT_MODEL),
     }
 
 
