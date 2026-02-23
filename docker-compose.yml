@@ -15,10 +15,10 @@ services:
       - AGENT_LIST=claude,codex,gemini,opencode,qwen
       # Supported model IDs (comma-separated)
       - MODEL_LIST=ollama-kimi-k2.5,ollama-minimax-m2.5,ollama-qwen3-coder
+      - INSIGHT_MODEL=ollama-gemini-3-flash-preview
       # LiteLLM endpoint and credentials
       - LITELLM_BASE_URL=${LITELLM_BASE_URL}
       - LITELLM_API_KEY=${LITELLM_API_KEY}
-      - LITELLM_MODEL=${LITELLM_MODEL:-ollama-gemini-3-flash-preview}
       # /run response timeout in seconds (0 or empty disables timeout)
       - RUN_RESPONSE_TIMEOUT_SECONDS=${RUN_RESPONSE_TIMEOUT_SECONDS:-300}
       # /insight/run response timeout in seconds (0 or empty disables timeout)

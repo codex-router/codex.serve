@@ -116,6 +116,11 @@ MAX_INSIGHT_FILES = 200
 MAX_INSIGHT_FILE_CHARS = 200_000
 
 
+def _is_default_codex_insight_image(image: str) -> bool:
+    normalized = (image or "").strip().lower()
+    return normalized in {"craftslab/codex-insight:latest", "codex-insight:latest"}
+
+
 def _resolve_context_file_content(item: ContextFileItem) -> Optional[str]:
     """Return the text content for a ContextFileItem.
 
@@ -399,11 +404,27 @@ async def run_insight(req: InsightRunRequest):
     container_out = _host_path_to_container_path(out_path, mount_root)
 
     docker_env: Dict[str, str] = {}
-    for env_key in ("LITELLM_BASE_URL", "LITELLM_API_KEY", "LITELLM_MODEL"):
+    for env_key in ("LITELLM_BASE_URL", "LITELLM_API_KEY"):
         env_val = os.environ.get(env_key)
         if env_val:
             docker_env[env_key] = env_val
-    docker_env.update(req.env or {})
+
+    request_env = req.env or {}
+    docker_env.update(request_env)
+
+    if _is_default_codex_insight_image(INSIGHT_DOCKER_IMAGE):
+        docker_env.pop("LITELLM_MODEL", None)
+
+        configured_model = (os.environ.get("INSIGHT_MODEL") or "").strip()
+        request_model_override = (request_env.get("INSIGHT_MODEL") or "").strip()
+        selected_model = request_model_override or configured_model
+
+        if selected_model:
+            docker_env["LITELLM_MODEL"] = selected_model
+    else:
+        configured_model = (os.environ.get("LITELLM_MODEL") or "").strip()
+        if configured_model and "LITELLM_MODEL" not in request_env:
+            docker_env["LITELLM_MODEL"] = configured_model
 
     command = [
         "docker",

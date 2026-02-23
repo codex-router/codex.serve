@@ -50,7 +50,8 @@ The server reads supported agents from `AGENT_LIST` (comma-separated). In local 
 | `MODEL_LIST` | *(empty)* | Returned model IDs for `GET /models` (comma-separated) |
 | `LITELLM_BASE_URL` | *(unset)* | Default LiteLLM base URL passed to execution container in Docker mode |
 | `LITELLM_API_KEY` | *(unset)* | Default LiteLLM API key passed to execution container in Docker mode |
-| `LITELLM_MODEL` | *(unset)* | Default model passed to `codex-insight` container when not provided in request `env` |
+| `LITELLM_MODEL` | *(unset)* | Default model for `POST /run`, and for `POST /insight/run` when using a custom `CODEX_INSIGHT_IMAGE` |
+| `INSIGHT_MODEL` | *(unset)* | Default model used for `POST /insight/run` when `CODEX_INSIGHT_IMAGE` is `craftslab/codex-insight:latest` (mapped to container `LITELLM_MODEL`) |
 | `RUN_RESPONSE_TIMEOUT_SECONDS` | *(unset)* | Optional timeout (seconds) for `POST /run`; `<= 0`, empty, or invalid disables timeout |
 | `CODEX_INSIGHT_IMAGE` | `craftslab/codex-insight:latest` | Docker image used by `POST /insight/run` |
 | `INSIGHT_RESPONSE_TIMEOUT_SECONDS` | *(unset)* | Optional timeout (seconds) for `POST /insight/run`; `<= 0`, empty, or invalid disables timeout |
@@ -278,6 +279,8 @@ docker run --rm \
   --out /workspace/... [other optional flags]
 ```
 
+When `CODEX_INSIGHT_IMAGE` is `craftslab/codex-insight:latest` (or `codex-insight:latest`), `codex.serve` resolves that `LITELLM_MODEL` value from `INSIGHT_MODEL` instead of `LITELLM_MODEL`.
+
 **Request Body:**
 
 ```json
@@ -292,12 +295,14 @@ docker run --rm \
   "env": {
     "LITELLM_BASE_URL": "https://litellm.com/v1",
     "LITELLM_API_KEY": "<your-api-key>",
-    "LITELLM_MODEL": "ollama-gemini-3-flash-preview"
+    "INSIGHT_MODEL": "ollama-gemini-3-flash-preview"
   }
 }
 ```
 
-`env` is optional and can override `LITELLM_BASE_URL`, `LITELLM_API_KEY`, and `LITELLM_MODEL` inherited from `codex.serve`.
+`env` is optional and can override `LITELLM_BASE_URL`, `LITELLM_API_KEY`, and model selection inherited from `codex.serve`:
+- For `craftslab/codex-insight:latest` (or `codex-insight:latest`), set `INSIGHT_MODEL`.
+- For other custom `CODEX_INSIGHT_IMAGE` values, set `LITELLM_MODEL`.
 
 **Response (success or tool failure):**
 
