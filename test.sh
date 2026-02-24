@@ -12,6 +12,7 @@ INSIGHT_IMAGE_TAG="codex-insight:test"
 SERVE_IMAGE_TAG="codex-serve:test"
 SERVE_CONTAINER_NAME="codex-serve-test"
 GRAPH_CONTAINER_NAME="codex-graph-test"
+GRAPH_DEFAULT_CONTAINER_NAME="codex-graph-backend"
 SERVE_PORT="18000"
 TEST_CONTAINER_LABEL="codex.serve.test=true"
 TMP_DIR=""
@@ -41,6 +42,7 @@ cleanup() {
 	fi
 
 	docker rm -f "${GRAPH_CONTAINER_NAME}" >/dev/null 2>&1 || true
+	docker rm -f "${GRAPH_DEFAULT_CONTAINER_NAME}" >/dev/null 2>&1 || true
 	docker rm -f "${SERVE_CONTAINER_NAME}" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -90,6 +92,7 @@ docker run -d \
 	-e AGENT_LIST="codex,bash" \
 	-e CODEX_AGENT_IMAGE="${AGENT_IMAGE_TAG}" \
 	-e CODEX_INSIGHT_IMAGE="${INSIGHT_IMAGE_TAG}" \
+	-e GRAPH_CONTAINER_NAME="${GRAPH_CONTAINER_NAME}" \
 	-e GRAPH_BASE_URL="http://127.0.0.1:59999" \
 	-e GRAPH_AUTO_START="true" \
 	-e GRAPH_HEALTH_CHECK_TIMEOUT_SECONDS="5" \
