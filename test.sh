@@ -11,6 +11,7 @@ AGENT_IMAGE_TAG="codex-agent:test"
 INSIGHT_IMAGE_TAG="codex-insight:test"
 SERVE_IMAGE_TAG="codex-serve:test"
 SERVE_CONTAINER_NAME="codex-serve-test"
+GRAPH_CONTAINER_NAME="codex-graph-test"
 SERVE_PORT="18000"
 TEST_CONTAINER_LABEL="codex.serve.test=true"
 TMP_DIR=""
@@ -29,6 +30,17 @@ cleanup() {
 		docker rm -f ${test_container_ids} >/dev/null 2>&1 || true
 	fi
 
+	agent_container_ids="$(docker ps -aq --filter "ancestor=${AGENT_IMAGE_TAG}" 2>/dev/null || true)"
+	if [ -n "${agent_container_ids}" ]; then
+		docker rm -f ${agent_container_ids} >/dev/null 2>&1 || true
+	fi
+
+	insight_container_ids="$(docker ps -aq --filter "ancestor=${INSIGHT_IMAGE_TAG}" 2>/dev/null || true)"
+	if [ -n "${insight_container_ids}" ]; then
+		docker rm -f ${insight_container_ids} >/dev/null 2>&1 || true
+	fi
+
+	docker rm -f "${GRAPH_CONTAINER_NAME}" >/dev/null 2>&1 || true
 	docker rm -f "${SERVE_CONTAINER_NAME}" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
