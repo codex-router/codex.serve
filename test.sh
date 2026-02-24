@@ -432,7 +432,7 @@ for root, _, names in os.walk(repo_dir):
 body = {
 	"files": files,
 	"dryRun": True,
-	"include": ["**/*.py"],
+	"include": ["*.py", "**/*.py"],
 }
 
 print(json.dumps(body))
