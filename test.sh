@@ -62,8 +62,10 @@ docker run -d \
 	-e AGENT_LIST="codex,bash" \
 	-e CODEX_AGENT_IMAGE="${AGENT_IMAGE_TAG}" \
 	-e CODEX_INSIGHT_IMAGE="${INSIGHT_IMAGE_TAG}" \
+	-e GRAPH_BASE_URL="http://127.0.0.1:59999" \
 	-e RUN_RESPONSE_TIMEOUT_SECONDS="60" \
 	-e INSIGHT_RESPONSE_TIMEOUT_SECONDS="300" \
+	-e GRAPH_RESPONSE_TIMEOUT_SECONDS="30" \
 	-e LITELLM_BASE_URL="http://litellm.test.local" \
 	-e LITELLM_API_KEY="test-api-key" \
 	"${SERVE_IMAGE_TAG}" >/dev/null
@@ -441,6 +443,32 @@ files = data.get("files")
 if files != []:
 	raise SystemExit(f"/insight/run dry-run expected empty files, got {files}")
 PY
+
+echo "- Testing POST /graph/run validation and upstream error mapping"
+GRAPH_INVALID_BODY="${TMP_DIR}/graph-invalid.json"
+GRAPH_PROXY_BODY="${TMP_DIR}/graph-proxy.json"
+
+GRAPH_INVALID_STATUS="$(curl -sS -o "${GRAPH_INVALID_BODY}" -w "%{http_code}" \
+	-X POST "http://127.0.0.1:${SERVE_PORT}/graph/run" \
+	-H "Content-Type: application/json" \
+	-d '{"code":"","file_paths":[]}')"
+
+if [ "${GRAPH_INVALID_STATUS}" != "400" ]; then
+	echo "Expected HTTP 400 from /graph/run for invalid payload, got ${GRAPH_INVALID_STATUS}"
+	cat "${GRAPH_INVALID_BODY}"
+	exit 1
+fi
+
+GRAPH_PROXY_STATUS="$(curl -sS -o "${GRAPH_PROXY_BODY}" -w "%{http_code}" \
+	-X POST "http://127.0.0.1:${SERVE_PORT}/graph/run" \
+	-H "Content-Type: application/json" \
+	-d '{"code":"def run():\n    return 1","file_paths":["app.py"]}')"
+
+if [ "${GRAPH_PROXY_STATUS}" != "502" ]; then
+	echo "Expected HTTP 502 from /graph/run when GRAPH_BASE_URL is unreachable, got ${GRAPH_PROXY_STATUS}"
+	cat "${GRAPH_PROXY_BODY}"
+	exit 1
+fi
 
 rm -rf "${TMP_DIR}"
 

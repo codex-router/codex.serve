@@ -5,6 +5,9 @@ import codecs
 import base64
 import shutil
 import tempfile
+import urllib.request
+import urllib.error
+import socket
 from pathlib import Path
 from typing import List, Optional, Dict
 from uuid import uuid4
@@ -72,6 +75,20 @@ class InsightRunResponse(BaseModel):
     files: List[InsightFileResult]
     count: int
 
+
+class GraphRunRequest(BaseModel):
+    code: str
+    file_paths: List[str]
+    framework_hint: Optional[str] = None
+    metadata: Optional[List[Dict]] = None
+    http_connections: Optional[str] = None
+
+
+class GraphRunResponse(BaseModel):
+    graph: Dict
+    usage: Optional[Dict] = None
+    cost: Optional[Dict] = None
+
 # Supported agent providers, configurable via env (comma-separated)
 DEFAULT_AGENT_LIST = ["codex"]
 AGENT_LIST = [
@@ -118,6 +135,12 @@ RESPONSE_TIMEOUT_SECONDS = _parse_response_timeout_seconds(
 INSIGHT_RESPONSE_TIMEOUT_SECONDS = _parse_response_timeout_seconds(
     os.environ.get("INSIGHT_RESPONSE_TIMEOUT_SECONDS")
 )
+
+GRAPH_RESPONSE_TIMEOUT_SECONDS = _parse_response_timeout_seconds(
+    os.environ.get("GRAPH_RESPONSE_TIMEOUT_SECONDS")
+)
+
+GRAPH_BASE_URL = (os.environ.get("GRAPH_BASE_URL") or "http://localhost:52104").rstrip("/")
 
 MAX_CONTEXT_FILES = 20
 MAX_CONTEXT_FILE_CHARS = 12_000
@@ -455,6 +478,33 @@ def _build_insight_args(req: InsightRunRequest) -> List[str]:
     return args
 
 
+async def _post_json(url: str, payload: Dict, timeout_seconds: Optional[float]) -> tuple[int, str]:
+    def _do_post() -> tuple[int, str]:
+        body = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            method="POST",
+        )
+
+        timeout_arg = timeout_seconds if timeout_seconds is not None else None
+        try:
+            with urllib.request.urlopen(req, timeout=timeout_arg) as response:
+                status = getattr(response, "status", 200)
+                response_body = response.read().decode("utf-8", errors="replace")
+                return status, response_body
+        except urllib.error.HTTPError as exc:
+            body_bytes = exc.read() if exc.fp is not None else b""
+            body_text = body_bytes.decode("utf-8", errors="replace") if body_bytes else ""
+            return exc.code, body_text
+
+    return await asyncio.to_thread(_do_post)
+
+
 @app.get("/models")
 async def get_models():
     return {
@@ -595,6 +645,68 @@ async def run_insight(req: InsightRunRequest):
         outputDir=response_output_dir,
         files=insight_files,
         count=len(insight_files),
+    )
+
+
+@app.post("/graph/run", response_model=GraphRunResponse)
+async def run_graph(req: GraphRunRequest):
+    code = (req.code or "").strip()
+    file_paths = req.file_paths or []
+
+    if not code:
+        raise HTTPException(status_code=400, detail="code is required")
+    if not file_paths:
+        raise HTTPException(status_code=400, detail="file_paths is required")
+
+    payload: Dict = {
+        "code": req.code,
+        "file_paths": file_paths,
+    }
+    if req.framework_hint:
+        payload["framework_hint"] = req.framework_hint
+    if req.metadata is not None:
+        payload["metadata"] = req.metadata
+    if req.http_connections:
+        payload["http_connections"] = req.http_connections
+
+    graph_analyze_url = f"{GRAPH_BASE_URL}/analyze"
+    timeout_message = (
+        "Request timed out while waiting for codex.graph response "
+        f"({GRAPH_RESPONSE_TIMEOUT_SECONDS}s)."
+    )
+
+    try:
+        status_code, response_body = await _post_json(
+            graph_analyze_url,
+            payload,
+            GRAPH_RESPONSE_TIMEOUT_SECONDS,
+        )
+    except (TimeoutError, socket.timeout) as exc:
+        raise HTTPException(status_code=504, detail=timeout_message) from exc
+    except urllib.error.URLError as exc:
+        if isinstance(exc.reason, TimeoutError) or isinstance(exc.reason, socket.timeout):
+            raise HTTPException(status_code=504, detail=timeout_message) from exc
+        raise HTTPException(status_code=502, detail=f"Failed to call codex.graph: {exc}") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to call codex.graph: {exc}") from exc
+
+    if status_code < 200 or status_code >= 300:
+        detail = response_body.strip() or f"codex.graph returned status {status_code}"
+        raise HTTPException(status_code=502, detail=detail)
+
+    try:
+        parsed = json.loads(response_body) if response_body.strip() else {}
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=502, detail="Invalid JSON response from codex.graph") from exc
+
+    graph = parsed.get("graph")
+    if not isinstance(graph, dict):
+        raise HTTPException(status_code=502, detail="Invalid /analyze response from codex.graph: missing graph")
+
+    return GraphRunResponse(
+        graph=graph,
+        usage=parsed.get("usage"),
+        cost=parsed.get("cost"),
     )
 
 @app.post("/agent/run")

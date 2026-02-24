@@ -6,6 +6,7 @@ HTTP server implementation for the Codex Gerrit plugin. This service exposes a R
 
 - Exposes a `POST /agent/run` endpoint to execute agent commands.
 - Exposes a `POST /insight/run` endpoint to execute `codex-insight` Docker jobs and return generated insight pages.
+- Exposes a `POST /graph/run` endpoint to proxy code graph generation to `codex.graph` (`POST /analyze`).
 - Exposes a `POST /sessions/{sessionId}/stop` endpoint to stop an active `/agent/run` session.
 - Exposes a `GET /models` endpoint to return model IDs from `AGENT_MODEL`.
 - Exposes a `GET /agents` endpoint to list supported agent names.
@@ -55,6 +56,8 @@ The server reads supported agents from `AGENT_LIST` (comma-separated). In local 
 | `RUN_RESPONSE_TIMEOUT_SECONDS` | *(unset)* | Optional timeout (seconds) for `POST /agent/run`; `<= 0`, empty, or invalid disables timeout |
 | `CODEX_INSIGHT_IMAGE` | `craftslab/codex-insight:latest` | Docker image used by `POST /insight/run` |
 | `INSIGHT_RESPONSE_TIMEOUT_SECONDS` | *(unset)* | Optional timeout (seconds) for `POST /insight/run`; `<= 0`, empty, or invalid disables timeout |
+| `GRAPH_BASE_URL` | `http://localhost:52104` | Base URL for `codex.graph` backend used by `POST /graph/run` (proxied to `${GRAPH_BASE_URL}/analyze`) |
+| `GRAPH_RESPONSE_TIMEOUT_SECONDS` | *(unset)* | Optional timeout (seconds) for `POST /graph/run`; `<= 0`, empty, or invalid disables timeout |
 
 ### Docker Mode
 
@@ -102,6 +105,7 @@ This configuration:
 - Mounts the host's Docker socket (`/var/run/docker.sock`) so it can spawn sibling containers.
 - Configures `CODEX_AGENT_IMAGE` to `craftslab/codex-agent:latest` for executing agents safely. The server container will spawn this image for each request.
 - Configures `CODEX_INSIGHT_IMAGE` to `craftslab/codex-insight:latest` for insight generation requests.
+- Configures `GRAPH_BASE_URL` to `http://host.docker.internal:52104` so `POST /graph/run` can reach `codex.graph` started by Docker on the host.
 - Sets `RUN_RESPONSE_TIMEOUT_SECONDS` in [docker-compose.yml](docker-compose.yml) (default `300`) to bound `POST /agent/run` response time in container deployments.
 
 See [docker-compose.yml](docker-compose.yml) for details.
@@ -347,4 +351,50 @@ When `CODEX_INSIGHT_IMAGE` is `craftslab/codex-insight:latest` (or `codex-insigh
 
 - `files` contains top-level generated Markdown files from `outputDir` when `exit_code` is `0`.
 - If timeout is configured via `INSIGHT_RESPONSE_TIMEOUT_SECONDS` and reached, endpoint returns `504`.
+
+### `POST /graph/run`
+
+Proxies graph generation to `codex.graph` backend API:
+
+```text
+POST ${GRAPH_BASE_URL}/analyze
+```
+
+This endpoint is useful when `codex.graph` is running via Docker compose as documented in [README_codex.graph.md](../codex.graph/README_codex.graph.md):
+
+```bash
+cd ../codex.graph
+./build.sh
+docker compose up -d backend
+curl http://localhost:52104/health
+```
+
+Then call `codex.serve`:
+
+```bash
+curl -X POST "http://localhost:8000/graph/run" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "code": "def run(): return 1",
+    "file_paths": ["app.py"],
+    "framework_hint": "python"
+  }'
+```
+
+Request body fields are forwarded to `codex.graph /analyze`:
+- `code` (required)
+- `file_paths` (required)
+- `framework_hint` (optional)
+- `metadata` (optional)
+- `http_connections` (optional)
+
+Response body is normalized and returned as:
+
+```json
+{
+  "graph": {"nodes": [], "edges": [], "llms_detected": [], "workflows": []},
+  "usage": null,
+  "cost": null
+}
+```
 
