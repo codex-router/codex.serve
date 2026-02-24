@@ -12,8 +12,23 @@ INSIGHT_IMAGE_TAG="codex-insight:test"
 SERVE_IMAGE_TAG="codex-serve:test"
 SERVE_CONTAINER_NAME="codex-serve-test"
 SERVE_PORT="18000"
+TEST_CONTAINER_LABEL="codex.serve.test=true"
+TMP_DIR=""
 
 cleanup() {
+	if [ -n "${RUN_PID:-}" ]; then
+		kill "${RUN_PID}" >/dev/null 2>&1 || true
+	fi
+
+	if [ -n "${TMP_DIR}" ] && [ -d "${TMP_DIR}" ]; then
+		rm -rf "${TMP_DIR}"
+	fi
+
+	test_container_ids="$(docker ps -aq --filter "label=${TEST_CONTAINER_LABEL}" 2>/dev/null || true)"
+	if [ -n "${test_container_ids}" ]; then
+		docker rm -f ${test_container_ids} >/dev/null 2>&1 || true
+	fi
+
 	docker rm -f "${SERVE_CONTAINER_NAME}" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -57,6 +72,7 @@ docker build -t "${SERVE_IMAGE_TAG}" -f "${SCRIPT_DIR}/Dockerfile" "${SCRIPT_DIR
 echo "[5/6] Running codex.serve with CODEX_AGENT_IMAGE=${AGENT_IMAGE_TAG} and CODEX_INSIGHT_IMAGE=${INSIGHT_IMAGE_TAG}"
 docker run -d \
 	--name "${SERVE_CONTAINER_NAME}" \
+	--label "${TEST_CONTAINER_LABEL}" \
 	-p "${SERVE_PORT}:8000" \
 	-v /var/run/docker.sock:/var/run/docker.sock \
 	-e AGENT_LIST="codex,bash" \
@@ -342,6 +358,7 @@ if [ "${STOP_STATUS}" != "200" ]; then
 fi
 
 wait "${RUN_PID}"
+unset RUN_PID
 
 python3 - "${STOP_RESP_BODY}" "${STOP_RUN_BODY}" <<'PY'
 import json
@@ -471,6 +488,7 @@ if [ "${GRAPH_PROXY_STATUS}" != "502" ]; then
 fi
 
 rm -rf "${TMP_DIR}"
+TMP_DIR=""
 
 echo "Docker mode smoke test passed."
 echo "Test completed successfully."
