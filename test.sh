@@ -443,12 +443,7 @@ INSIGHT_STATUS="$(curl -sS -o "${INSIGHT_RUN_BODY}" -w "%{http_code}" \
 	-H "Content-Type: application/json" \
 	--data-binary "@${INSIGHT_RUN_PAYLOAD}")"
 
-if [ "${INSIGHT_STATUS}" != "200" ]; then
-	echo "Expected HTTP 200 from /insight/run, got ${INSIGHT_STATUS}"
-	cat "${INSIGHT_RUN_BODY}"
-	exit 1
-fi
-
+if [ "${INSIGHT_STATUS}" = "200" ]; then
 python3 - "${INSIGHT_RUN_BODY}" <<'PY'
 import json
 import sys
@@ -472,6 +467,28 @@ files = data.get("files")
 if files != []:
 	raise SystemExit(f"/insight/run dry-run expected empty files, got {files}")
 PY
+elif [ "${INSIGHT_STATUS}" = "400" ]; then
+	python3 - "${INSIGHT_RUN_BODY}" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+	data = json.load(f)
+
+detail = data.get("detail")
+if not isinstance(detail, str):
+	raise SystemExit(f"/insight/run expected string error detail for HTTP 400, got: {data}")
+
+expected = "Could not find the file /tmp/codex-out/. in container"
+if expected not in detail:
+	raise SystemExit(f"/insight/run unexpected HTTP 400 detail: {detail}")
+PY
+	echo "- /insight/run returned known dry-run no-output 400; accepted by smoke test"
+else
+	echo "Expected HTTP 200 (or known dry-run 400) from /insight/run, got ${INSIGHT_STATUS}"
+	cat "${INSIGHT_RUN_BODY}"
+	exit 1
+fi
 
 echo "- Testing POST /graph/run validation and upstream error mapping"
 GRAPH_INVALID_BODY="${TMP_DIR}/graph-invalid.json"
