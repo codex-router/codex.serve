@@ -18,6 +18,7 @@ services:
       # Supported model IDs (comma-separated)
       - AGENT_MODEL=ollama-kimi-k2.5,ollama-minimax-m2.5,ollama-qwen3-coder
       - INSIGHT_MODEL=ollama-gemini-3-flash-preview
+      - GRAPH_MODEL=${GRAPH_MODEL:-}
       # codex.graph backend endpoint for /graph/run proxy
       - GRAPH_BASE_URL=${GRAPH_BASE_URL:-http://host.docker.internal:52104}
       # /graph/run response timeout in seconds (0 or empty disables timeout)

@@ -82,6 +82,7 @@ class GraphRunRequest(BaseModel):
     framework_hint: Optional[str] = None
     metadata: Optional[List[Dict]] = None
     http_connections: Optional[str] = None
+    env: Optional[Dict[str, str]] = None
 
 
 class GraphRunResponse(BaseModel):
@@ -141,6 +142,7 @@ GRAPH_RESPONSE_TIMEOUT_SECONDS = _parse_response_timeout_seconds(
 )
 
 GRAPH_BASE_URL = (os.environ.get("GRAPH_BASE_URL") or "http://localhost:52104").rstrip("/")
+GRAPH_MODEL = (os.environ.get("GRAPH_MODEL") or "").strip()
 
 MAX_CONTEXT_FILES = 20
 MAX_CONTEXT_FILE_CHARS = 12_000
@@ -668,6 +670,21 @@ async def run_graph(req: GraphRunRequest):
         payload["metadata"] = req.metadata
     if req.http_connections:
         payload["http_connections"] = req.http_connections
+
+    graph_env: Dict[str, str] = {}
+    for env_key in ("LITELLM_BASE_URL", "LITELLM_API_KEY"):
+        env_val = os.environ.get(env_key)
+        if env_val:
+            graph_env[env_key] = env_val
+
+    if GRAPH_MODEL:
+        graph_env["LITELLM_MODEL"] = GRAPH_MODEL
+
+    request_env = req.env or {}
+    graph_env.update(request_env)
+
+    if graph_env:
+        payload["env"] = graph_env
 
     graph_analyze_url = f"{GRAPH_BASE_URL}/analyze"
     timeout_message = (

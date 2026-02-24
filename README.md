@@ -57,6 +57,7 @@ The server reads supported agents from `AGENT_LIST` (comma-separated). In local 
 | `CODEX_INSIGHT_IMAGE` | `craftslab/codex-insight:latest` | Docker image used by `POST /insight/run` |
 | `INSIGHT_RESPONSE_TIMEOUT_SECONDS` | *(unset)* | Optional timeout (seconds) for `POST /insight/run`; `<= 0`, empty, or invalid disables timeout |
 | `GRAPH_BASE_URL` | `http://localhost:52104` | Base URL for `codex.graph` backend used by `POST /graph/run` (proxied to `${GRAPH_BASE_URL}/analyze`) |
+| `GRAPH_MODEL` | *(unset)* | Default graph model for `POST /graph/run` (mapped to forwarded payload env `LITELLM_MODEL`) |
 | `GRAPH_RESPONSE_TIMEOUT_SECONDS` | *(unset)* | Optional timeout (seconds) for `POST /graph/run`; `<= 0`, empty, or invalid disables timeout |
 
 ### Docker Mode
@@ -106,6 +107,7 @@ This configuration:
 - Configures `CODEX_AGENT_IMAGE` to `craftslab/codex-agent:latest` for executing agents safely. The server container will spawn this image for each request.
 - Configures `CODEX_INSIGHT_IMAGE` to `craftslab/codex-insight:latest` for insight generation requests.
 - Configures `GRAPH_BASE_URL` to `http://host.docker.internal:52104` so `POST /graph/run` can reach `codex.graph` started by Docker on the host.
+- Supports `GRAPH_MODEL` for `POST /graph/run` payload env forwarding as `LITELLM_MODEL`.
 - Sets `RUN_RESPONSE_TIMEOUT_SECONDS` in [docker-compose.yml](docker-compose.yml) (default `300`) to bound `POST /agent/run` response time in container deployments.
 
 See [docker-compose.yml](docker-compose.yml) for details.
@@ -387,6 +389,14 @@ Request body fields are forwarded to `codex.graph /analyze`:
 - `framework_hint` (optional)
 - `metadata` (optional)
 - `http_connections` (optional)
+- `env` (optional)
+
+`env` is optional and can override forwarded defaults from `codex.serve`:
+- `LITELLM_BASE_URL`
+- `LITELLM_API_KEY`
+- `LITELLM_MODEL` (default resolved from `GRAPH_MODEL`)
+
+For `codex.graph` Docker compose startup, set `LITELLM_MODEL` in its environment (`backend/.env` or shell env) as documented in [README_codex.graph.md](../codex.graph/README_codex.graph.md).
 
 Response body is normalized and returned as:
 
