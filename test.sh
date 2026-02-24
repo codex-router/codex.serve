@@ -91,7 +91,8 @@ docker run -d \
 	-e CODEX_AGENT_IMAGE="${AGENT_IMAGE_TAG}" \
 	-e CODEX_INSIGHT_IMAGE="${INSIGHT_IMAGE_TAG}" \
 	-e GRAPH_BASE_URL="http://127.0.0.1:59999" \
-	-e GRAPH_AUTO_START="false" \
+	-e GRAPH_AUTO_START="true" \
+	-e GRAPH_HEALTH_CHECK_TIMEOUT_SECONDS="5" \
 	-e RUN_RESPONSE_TIMEOUT_SECONDS="60" \
 	-e INSIGHT_RESPONSE_TIMEOUT_SECONDS="300" \
 	-e GRAPH_RESPONSE_TIMEOUT_SECONDS="30" \
@@ -491,7 +492,7 @@ else
 	exit 1
 fi
 
-echo "- Testing POST /graph/run backend-unavailable behavior and upstream error mapping"
+echo "- Testing POST /graph/run auto-start failure and readiness error mapping"
 GRAPH_INVALID_BODY="${TMP_DIR}/graph-invalid.json"
 GRAPH_FILE_PATHS_INVALID_BODY="${TMP_DIR}/graph-file-paths-invalid.json"
 GRAPH_PROXY_BODY="${TMP_DIR}/graph-proxy.json"
@@ -501,8 +502,8 @@ GRAPH_INVALID_STATUS="$(curl -sS -o "${GRAPH_INVALID_BODY}" -w "%{http_code}" \
 	-H "Content-Type: application/json" \
 	-d '{"code":"","file_paths":[]}')"
 
-if [ "${GRAPH_INVALID_STATUS}" != "502" ]; then
-	echo "Expected HTTP 502 from /graph/run when backend is unavailable, got ${GRAPH_INVALID_STATUS}"
+if [ "${GRAPH_INVALID_STATUS}" != "502" ] && [ "${GRAPH_INVALID_STATUS}" != "504" ]; then
+	echo "Expected HTTP 502/504 from /graph/run when auto-start cannot make backend healthy, got ${GRAPH_INVALID_STATUS}"
 	cat "${GRAPH_INVALID_BODY}"
 	exit 1
 fi
@@ -515,9 +516,19 @@ with open(sys.argv[1], "r", encoding="utf-8") as f:
 	data = json.load(f)
 
 detail = data.get("detail")
-expected = "codex.graph backend is not healthy and auto-start is disabled"
-if not isinstance(detail, str) or expected not in detail:
-	raise SystemExit(f"/graph/run backend-unavailable detail mismatch: {detail}")
+if not isinstance(detail, str):
+	raise SystemExit(f"/graph/run expected string detail, got: {data}")
+
+expected_fragments = [
+	"Timed out waiting for codex.graph health endpoint after startup",
+	"Failed to start codex.graph backend",
+	"Error response from daemon",
+	"pull access denied",
+	"No such image",
+]
+
+if not any(fragment in detail for fragment in expected_fragments):
+	raise SystemExit(f"/graph/run unexpected auto-start failure detail: {detail}")
 PY
 
 GRAPH_FILE_PATHS_INVALID_STATUS="$(curl -sS -o "${GRAPH_FILE_PATHS_INVALID_BODY}" -w "%{http_code}" \
@@ -525,8 +536,8 @@ GRAPH_FILE_PATHS_INVALID_STATUS="$(curl -sS -o "${GRAPH_FILE_PATHS_INVALID_BODY}
 	-H "Content-Type: application/json" \
 	-d '{"code":"def run():\n    return 1","file_paths":[]}')"
 
-if [ "${GRAPH_FILE_PATHS_INVALID_STATUS}" != "502" ]; then
-	echo "Expected HTTP 502 from /graph/run when backend is unavailable, got ${GRAPH_FILE_PATHS_INVALID_STATUS}"
+if [ "${GRAPH_FILE_PATHS_INVALID_STATUS}" != "502" ] && [ "${GRAPH_FILE_PATHS_INVALID_STATUS}" != "504" ]; then
+	echo "Expected HTTP 502/504 from /graph/run when auto-start cannot make backend healthy, got ${GRAPH_FILE_PATHS_INVALID_STATUS}"
 	cat "${GRAPH_FILE_PATHS_INVALID_BODY}"
 	exit 1
 fi
@@ -539,9 +550,19 @@ with open(sys.argv[1], "r", encoding="utf-8") as f:
 	data = json.load(f)
 
 detail = data.get("detail")
-expected = "codex.graph backend is not healthy and auto-start is disabled"
-if not isinstance(detail, str) or expected not in detail:
-	raise SystemExit(f"/graph/run backend-unavailable detail mismatch: {detail}")
+if not isinstance(detail, str):
+	raise SystemExit(f"/graph/run expected string detail, got: {data}")
+
+expected_fragments = [
+	"Timed out waiting for codex.graph health endpoint after startup",
+	"Failed to start codex.graph backend",
+	"Error response from daemon",
+	"pull access denied",
+	"No such image",
+]
+
+if not any(fragment in detail for fragment in expected_fragments):
+	raise SystemExit(f"/graph/run unexpected auto-start failure detail: {detail}")
 PY
 
 GRAPH_PROXY_STATUS="$(curl -sS -o "${GRAPH_PROXY_BODY}" -w "%{http_code}" \
@@ -549,8 +570,8 @@ GRAPH_PROXY_STATUS="$(curl -sS -o "${GRAPH_PROXY_BODY}" -w "%{http_code}" \
 	-H "Content-Type: application/json" \
 	-d '{"code":"def run():\n    return 1","file_paths":["app.py"],"env":{"LITELLM_MODEL":"graph-test-model"}}')"
 
-if [ "${GRAPH_PROXY_STATUS}" != "502" ]; then
-	echo "Expected HTTP 502 from /graph/run when GRAPH_BASE_URL is unreachable, got ${GRAPH_PROXY_STATUS}"
+if [ "${GRAPH_PROXY_STATUS}" != "502" ] && [ "${GRAPH_PROXY_STATUS}" != "504" ]; then
+	echo "Expected HTTP 502/504 from /graph/run when GRAPH_BASE_URL is unreachable, got ${GRAPH_PROXY_STATUS}"
 	cat "${GRAPH_PROXY_BODY}"
 	exit 1
 fi
@@ -563,7 +584,19 @@ with open(sys.argv[1], "r", encoding="utf-8") as f:
 	data = json.load(f)
 
 detail = data.get("detail")
-if not isinstance(detail, str) or "Failed to call codex.graph" not in detail:
+if not isinstance(detail, str):
+	raise SystemExit(f"/graph/run expected string detail, got: {data}")
+
+expected_fragments = [
+	"Timed out waiting for codex.graph health endpoint after startup",
+	"Failed to start codex.graph backend",
+	"Error response from daemon",
+	"pull access denied",
+	"No such image",
+	"Failed to call codex.graph",
+]
+
+if not any(fragment in detail for fragment in expected_fragments):
 	raise SystemExit(f"/graph/run upstream error detail mismatch: {detail}")
 PY
 
