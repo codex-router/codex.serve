@@ -114,7 +114,7 @@ if [ "${ready}" -ne 1 ]; then
 	exit 1
 fi
 
-echo "[6/6] Testing codex.serve APIs (/agents, /models, /agent/run, /insight/run)"
+echo "[6/6] Testing codex.serve APIs (/agents, /models, /agent/run, /insight/run, /graph/run)"
 TMP_DIR="$(mktemp -d)"
 AGENTS_BODY="${TMP_DIR}/agents.json"
 MODELS_BODY="${TMP_DIR}/models.json"
@@ -475,6 +475,7 @@ PY
 
 echo "- Testing POST /graph/run validation and upstream error mapping"
 GRAPH_INVALID_BODY="${TMP_DIR}/graph-invalid.json"
+GRAPH_FILE_PATHS_INVALID_BODY="${TMP_DIR}/graph-file-paths-invalid.json"
 GRAPH_PROXY_BODY="${TMP_DIR}/graph-proxy.json"
 
 GRAPH_INVALID_STATUS="$(curl -sS -o "${GRAPH_INVALID_BODY}" -w "%{http_code}" \
@@ -488,6 +489,41 @@ if [ "${GRAPH_INVALID_STATUS}" != "400" ]; then
 	exit 1
 fi
 
+python3 - "${GRAPH_INVALID_BODY}" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+	data = json.load(f)
+
+detail = data.get("detail")
+if detail != "code is required":
+	raise SystemExit(f"/graph/run invalid payload detail mismatch: {detail}")
+PY
+
+GRAPH_FILE_PATHS_INVALID_STATUS="$(curl -sS -o "${GRAPH_FILE_PATHS_INVALID_BODY}" -w "%{http_code}" \
+	-X POST "http://127.0.0.1:${SERVE_PORT}/graph/run" \
+	-H "Content-Type: application/json" \
+	-d '{"code":"def run():\n    return 1","file_paths":[]}')"
+
+if [ "${GRAPH_FILE_PATHS_INVALID_STATUS}" != "400" ]; then
+	echo "Expected HTTP 400 from /graph/run when file_paths is empty, got ${GRAPH_FILE_PATHS_INVALID_STATUS}"
+	cat "${GRAPH_FILE_PATHS_INVALID_BODY}"
+	exit 1
+fi
+
+python3 - "${GRAPH_FILE_PATHS_INVALID_BODY}" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+	data = json.load(f)
+
+detail = data.get("detail")
+if detail != "file_paths is required":
+	raise SystemExit(f"/graph/run file_paths validation detail mismatch: {detail}")
+PY
+
 GRAPH_PROXY_STATUS="$(curl -sS -o "${GRAPH_PROXY_BODY}" -w "%{http_code}" \
 	-X POST "http://127.0.0.1:${SERVE_PORT}/graph/run" \
 	-H "Content-Type: application/json" \
@@ -498,6 +534,18 @@ if [ "${GRAPH_PROXY_STATUS}" != "502" ]; then
 	cat "${GRAPH_PROXY_BODY}"
 	exit 1
 fi
+
+python3 - "${GRAPH_PROXY_BODY}" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+	data = json.load(f)
+
+detail = data.get("detail")
+if not isinstance(detail, str) or "Failed to call codex.graph" not in detail:
+	raise SystemExit(f"/graph/run upstream error detail mismatch: {detail}")
+PY
 
 rm -rf "${TMP_DIR}"
 TMP_DIR=""
