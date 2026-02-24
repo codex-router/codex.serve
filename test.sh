@@ -491,7 +491,7 @@ else
 	exit 1
 fi
 
-echo "- Testing POST /graph/run validation and upstream error mapping"
+echo "- Testing POST /graph/run backend-unavailable behavior and upstream error mapping"
 GRAPH_INVALID_BODY="${TMP_DIR}/graph-invalid.json"
 GRAPH_FILE_PATHS_INVALID_BODY="${TMP_DIR}/graph-file-paths-invalid.json"
 GRAPH_PROXY_BODY="${TMP_DIR}/graph-proxy.json"
@@ -501,8 +501,8 @@ GRAPH_INVALID_STATUS="$(curl -sS -o "${GRAPH_INVALID_BODY}" -w "%{http_code}" \
 	-H "Content-Type: application/json" \
 	-d '{"code":"","file_paths":[]}')"
 
-if [ "${GRAPH_INVALID_STATUS}" != "400" ]; then
-	echo "Expected HTTP 400 from /graph/run for invalid payload, got ${GRAPH_INVALID_STATUS}"
+if [ "${GRAPH_INVALID_STATUS}" != "502" ]; then
+	echo "Expected HTTP 502 from /graph/run when backend is unavailable, got ${GRAPH_INVALID_STATUS}"
 	cat "${GRAPH_INVALID_BODY}"
 	exit 1
 fi
@@ -515,8 +515,9 @@ with open(sys.argv[1], "r", encoding="utf-8") as f:
 	data = json.load(f)
 
 detail = data.get("detail")
-if detail != "code is required":
-	raise SystemExit(f"/graph/run invalid payload detail mismatch: {detail}")
+expected = "codex.graph backend is not healthy and auto-start is disabled"
+if not isinstance(detail, str) or expected not in detail:
+	raise SystemExit(f"/graph/run backend-unavailable detail mismatch: {detail}")
 PY
 
 GRAPH_FILE_PATHS_INVALID_STATUS="$(curl -sS -o "${GRAPH_FILE_PATHS_INVALID_BODY}" -w "%{http_code}" \
@@ -524,8 +525,8 @@ GRAPH_FILE_PATHS_INVALID_STATUS="$(curl -sS -o "${GRAPH_FILE_PATHS_INVALID_BODY}
 	-H "Content-Type: application/json" \
 	-d '{"code":"def run():\n    return 1","file_paths":[]}')"
 
-if [ "${GRAPH_FILE_PATHS_INVALID_STATUS}" != "400" ]; then
-	echo "Expected HTTP 400 from /graph/run when file_paths is empty, got ${GRAPH_FILE_PATHS_INVALID_STATUS}"
+if [ "${GRAPH_FILE_PATHS_INVALID_STATUS}" != "502" ]; then
+	echo "Expected HTTP 502 from /graph/run when backend is unavailable, got ${GRAPH_FILE_PATHS_INVALID_STATUS}"
 	cat "${GRAPH_FILE_PATHS_INVALID_BODY}"
 	exit 1
 fi
@@ -538,8 +539,9 @@ with open(sys.argv[1], "r", encoding="utf-8") as f:
 	data = json.load(f)
 
 detail = data.get("detail")
-if detail != "file_paths is required":
-	raise SystemExit(f"/graph/run file_paths validation detail mismatch: {detail}")
+expected = "codex.graph backend is not healthy and auto-start is disabled"
+if not isinstance(detail, str) or expected not in detail:
+	raise SystemExit(f"/graph/run backend-unavailable detail mismatch: {detail}")
 PY
 
 GRAPH_PROXY_STATUS="$(curl -sS -o "${GRAPH_PROXY_BODY}" -w "%{http_code}" \
