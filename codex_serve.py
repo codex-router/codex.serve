@@ -143,6 +143,19 @@ GRAPH_RESPONSE_TIMEOUT_SECONDS = _parse_response_timeout_seconds(
 
 GRAPH_BASE_URL = (os.environ.get("GRAPH_BASE_URL") or "http://localhost:52104").rstrip("/")
 GRAPH_MODEL = (os.environ.get("GRAPH_MODEL") or "").strip()
+CODEX_GRAPH_IMAGE = (os.environ.get("CODEX_GRAPH_IMAGE") or "craftslab/codex-graph:latest").strip()
+GRAPH_AUTO_START_ENABLED = (os.environ.get("GRAPH_AUTO_START") or "true").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+GRAPH_CONTAINER_NAME = (os.environ.get("GRAPH_CONTAINER_NAME") or "codex-graph-backend").strip()
+GRAPH_HEALTH_CHECK_TIMEOUT_SECONDS = (
+    _parse_response_timeout_seconds(os.environ.get("GRAPH_HEALTH_CHECK_TIMEOUT_SECONDS")) or 60.0
+)
+
+GRAPH_START_LOCK = asyncio.Lock()
 
 MAX_CONTEXT_FILES = 20
 MAX_CONTEXT_FILE_CHARS = 12_000
@@ -443,11 +456,13 @@ async def _run_subprocess_capture(
     command: List[str],
     timeout: Optional[float] = None,
     timeout_message: Optional[str] = None,
+    cwd: Optional[str] = None,
 ) -> tuple[int, str, str]:
     process = await asyncio.create_subprocess_exec(
         *command,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        cwd=cwd,
     )
     try:
         if timeout is not None:
@@ -505,6 +520,123 @@ async def _post_json(url: str, payload: Dict, timeout_seconds: Optional[float]) 
             return exc.code, body_text
 
     return await asyncio.to_thread(_do_post)
+
+
+async def _get_json(url: str, timeout_seconds: Optional[float]) -> tuple[int, str]:
+    def _do_get() -> tuple[int, str]:
+        req = urllib.request.Request(
+            url,
+            headers={
+                "Accept": "application/json",
+            },
+            method="GET",
+        )
+
+        timeout_arg = timeout_seconds if timeout_seconds is not None else None
+        try:
+            with urllib.request.urlopen(req, timeout=timeout_arg) as response:
+                status = getattr(response, "status", 200)
+                response_body = response.read().decode("utf-8", errors="replace")
+                return status, response_body
+        except urllib.error.HTTPError as exc:
+            body_bytes = exc.read() if exc.fp is not None else b""
+            body_text = body_bytes.decode("utf-8", errors="replace") if body_bytes else ""
+            return exc.code, body_text
+
+    return await asyncio.to_thread(_do_get)
+
+
+async def _is_graph_healthy() -> bool:
+    health_url = f"{GRAPH_BASE_URL}/health"
+    try:
+        status_code, _ = await _get_json(health_url, timeout_seconds=5.0)
+    except Exception:
+        return False
+    return 200 <= status_code < 300
+
+
+async def _is_graph_container_running() -> bool:
+    if not GRAPH_CONTAINER_NAME:
+        return False
+    command = [
+        "docker",
+        "inspect",
+        "-f",
+        "{{.State.Running}}",
+        GRAPH_CONTAINER_NAME,
+    ]
+    code, stdout_text, _ = await _run_subprocess_capture(command, timeout=15.0)
+    return code == 0 and stdout_text.strip().lower() == "true"
+
+
+async def _start_graph_backend_with_image() -> tuple[int, str, str]:
+    if not CODEX_GRAPH_IMAGE:
+        raise HTTPException(status_code=502, detail="CODEX_GRAPH_IMAGE is not configured")
+
+    graph_env: Dict[str, str] = {}
+    for env_key in ("LITELLM_BASE_URL", "LITELLM_API_KEY"):
+        env_val = os.environ.get(env_key)
+        if env_val:
+            graph_env[env_key] = env_val
+    if GRAPH_MODEL:
+        graph_env["LITELLM_MODEL"] = GRAPH_MODEL
+
+    if GRAPH_CONTAINER_NAME and await _is_graph_container_running():
+        return 0, "", ""
+
+    if GRAPH_CONTAINER_NAME:
+        # Remove stale container if exists and stopped.
+        await _run_subprocess_capture(["docker", "rm", "-f", GRAPH_CONTAINER_NAME], timeout=15.0)
+
+    command = ["docker", "run", "-d"]
+    if GRAPH_CONTAINER_NAME:
+        command.extend(["--name", GRAPH_CONTAINER_NAME])
+    command.extend(["-p", "52104:52104"])
+    for env_key, env_val in graph_env.items():
+        command.extend(["-e", f"{env_key}={env_val}"])
+    command.append(CODEX_GRAPH_IMAGE)
+
+    return await _run_subprocess_capture(command, timeout=120.0)
+
+
+async def _ensure_graph_backend_ready() -> None:
+    if await _is_graph_healthy():
+        return
+
+    if not GRAPH_AUTO_START_ENABLED:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "codex.graph backend is not healthy and auto-start is disabled. "
+                "Enable GRAPH_AUTO_START or start codex.graph backend manually."
+            ),
+        )
+
+    async with GRAPH_START_LOCK:
+        if await _is_graph_healthy():
+            return
+
+        start_code, _, start_stderr = await _start_graph_backend_with_image()
+
+        if start_code != 0:
+            raise HTTPException(
+                status_code=502,
+                detail=start_stderr.strip() or "Failed to start codex.graph backend via docker compose",
+            )
+
+        deadline = asyncio.get_running_loop().time() + GRAPH_HEALTH_CHECK_TIMEOUT_SECONDS
+        while True:
+            if await _is_graph_healthy():
+                return
+            if asyncio.get_running_loop().time() >= deadline:
+                raise HTTPException(
+                    status_code=504,
+                    detail=(
+                        "Timed out waiting for codex.graph health endpoint after startup "
+                        f"({GRAPH_HEALTH_CHECK_TIMEOUT_SECONDS}s)."
+                    ),
+                )
+            await asyncio.sleep(1.0)
 
 
 @app.get("/models")
@@ -652,6 +784,8 @@ async def run_insight(req: InsightRunRequest):
 
 @app.post("/graph/run", response_model=GraphRunResponse)
 async def run_graph(req: GraphRunRequest):
+    await _ensure_graph_backend_ready()
+
     code = (req.code or "").strip()
     file_paths = req.file_paths or []
 

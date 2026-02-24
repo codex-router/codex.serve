@@ -18,9 +18,16 @@ services:
       # Supported model IDs (comma-separated)
       - AGENT_MODEL=ollama-kimi-k2.5,ollama-minimax-m2.5,ollama-qwen3-coder
       - INSIGHT_MODEL=ollama-gemini-3-flash-preview
+      - CODEX_GRAPH_IMAGE=${CODEX_GRAPH_IMAGE:-craftslab/codex-graph:latest}
       - GRAPH_MODEL=${GRAPH_MODEL:-}
       # codex.graph backend endpoint for /graph/run proxy
       - GRAPH_BASE_URL=${GRAPH_BASE_URL:-http://host.docker.internal:52104}
+      # Enable automatic codex.graph docker compose bootstrap when /graph/run is called
+      - GRAPH_AUTO_START=${GRAPH_AUTO_START:-true}
+      # optional fixed container name used for codex.graph auto-start
+      - GRAPH_CONTAINER_NAME=${GRAPH_CONTAINER_NAME:-codex-graph-backend}
+      # max wait time for codex.graph health readiness after startup
+      - GRAPH_HEALTH_CHECK_TIMEOUT_SECONDS=${GRAPH_HEALTH_CHECK_TIMEOUT_SECONDS:-60}
       # /graph/run response timeout in seconds (0 or empty disables timeout)
       - GRAPH_RESPONSE_TIMEOUT_SECONDS=${GRAPH_RESPONSE_TIMEOUT_SECONDS:-1200}
       # LiteLLM endpoint and credentials
