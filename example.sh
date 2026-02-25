@@ -4,7 +4,7 @@ set -euo pipefail
 BASE_URL="${BASE_URL:-http://localhost:8000}"
 SESSION_ID="demo-$(date +%s)"
 REPO_PATH="${REPO_PATH:-$(pwd)}"
-DRY_RUN="${DRY_RUN:-true}"
+DRY_RUN="${DRY_RUN:-false}"
 LITELLM_SSL_VERIFY="${LITELLM_SSL_VERIFY:-false}"
 LITELLM_CA_BUNDLE="${LITELLM_CA_BUNDLE:-}"
 RUN_DATE="$(date +%Y%m%d-%H%M%S)"

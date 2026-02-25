@@ -755,16 +755,23 @@ async def run_insight(req: InsightRunRequest):
                 cp_out_code, _, cp_out_stderr = await _run_subprocess_capture(
                     ["docker", "cp", f"{container_name}:{container_out}{os.sep}.", transient_out_path]
                 )
-                if cp_out_code != 0:
+                missing_output_in_dry_run = (
+                    req.dryRun
+                    and cp_out_code != 0
+                    and "Could not find the file" in cp_out_stderr
+                    and container_out in cp_out_stderr
+                )
+                if cp_out_code != 0 and not missing_output_in_dry_run:
                     raise HTTPException(status_code=400, detail=cp_out_stderr.strip() or "Failed to collect insight output")
 
-                try:
-                    _copy_tree_contents(transient_out_path, response_output_dir)
-                except OSError as exc:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Failed to write insight output directory: {exc}",
-                    ) from exc
+                if cp_out_code == 0:
+                    try:
+                        _copy_tree_contents(transient_out_path, response_output_dir)
+                    except OSError as exc:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Failed to write insight output directory: {exc}",
+                        ) from exc
 
             insight_files = _collect_insight_files(response_output_dir) if run_code == 0 else []
         finally:
