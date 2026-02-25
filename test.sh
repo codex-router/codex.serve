@@ -101,6 +101,8 @@ docker run -d \
 	-e GRAPH_RESPONSE_TIMEOUT_SECONDS="30" \
 	-e LITELLM_BASE_URL="http://litellm.test.local" \
 	-e LITELLM_API_KEY="test-api-key" \
+	-e LITELLM_SSL_VERIFY="false" \
+	-e LITELLM_CA_BUNDLE="" \
 	"${SERVE_IMAGE_TAG}" >/dev/null
 
 echo "- Waiting for codex.serve readiness..."
@@ -571,7 +573,7 @@ PY
 GRAPH_PROXY_STATUS="$(curl -sS -o "${GRAPH_PROXY_BODY}" -w "%{http_code}" \
 	-X POST "http://127.0.0.1:${SERVE_PORT}/graph/run" \
 	-H "Content-Type: application/json" \
-	-d '{"code":"def run():\n    return 1","file_paths":["app.py"],"env":{"LITELLM_MODEL":"graph-test-model"}}')"
+	-d '{"code":"def run():\n    return 1","file_paths":["app.py"],"env":{"LITELLM_MODEL":"graph-test-model","LITELLM_SSL_VERIFY":"false","LITELLM_CA_BUNDLE":""}}')"
 
 if [ "${GRAPH_PROXY_STATUS}" != "502" ] && [ "${GRAPH_PROXY_STATUS}" != "504" ]; then
 	echo "Expected HTTP 502/504 from /graph/run when GRAPH_BASE_URL is unreachable, got ${GRAPH_PROXY_STATUS}"

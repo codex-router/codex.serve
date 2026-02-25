@@ -5,6 +5,8 @@ BASE_URL="${BASE_URL:-http://localhost:8000}"
 SESSION_ID="demo-$(date +%s)"
 REPO_PATH="${REPO_PATH:-$(pwd)}"
 DRY_RUN="${DRY_RUN:-true}"
+LITELLM_SSL_VERIFY="${LITELLM_SSL_VERIFY:-false}"
+LITELLM_CA_BUNDLE="${LITELLM_CA_BUNDLE:-}"
 RUN_DATE="$(date +%Y%m%d-%H%M%S)"
 OUT_PATH="${OUT_PATH:-/tmp/codex-serve-example-out-${RUN_DATE}}"
 
@@ -47,10 +49,12 @@ echo
 echo "Testing POST ${BASE_URL}/insight/run"
 echo "repoDirectory=${REPO_PATH}"
 echo "dryRun=${DRY_RUN}"
+echo "litellmSslVerify=${LITELLM_SSL_VERIFY}"
+echo "litellmCaBundle=${LITELLM_CA_BUNDLE}"
 echo "outPath=${OUT_PATH}"
 echo "payloadFile=${INSIGHT_PAYLOAD}"
 
-python3 - "${REPO_PATH}" "${DRY_RUN}" "${OUT_PATH}" > "${INSIGHT_PAYLOAD}" <<'PY'
+python3 - "${REPO_PATH}" "${DRY_RUN}" "${OUT_PATH}" "${LITELLM_SSL_VERIFY}" "${LITELLM_CA_BUNDLE}" > "${INSIGHT_PAYLOAD}" <<'PY'
 import base64
 import json
 import os
@@ -59,6 +63,8 @@ import sys
 repo_path = os.path.abspath(sys.argv[1])
 dry_run = sys.argv[2].strip().lower() in {"1", "true", "yes", "y", "on"}
 out_path = os.path.abspath(sys.argv[3])
+litellm_ssl_verify = sys.argv[4].strip().lower() in {"1", "true", "yes", "y", "on"}
+litellm_ca_bundle = sys.argv[5].strip()
 
 files = []
 for root, _, names in os.walk(repo_path):
@@ -75,6 +81,10 @@ body = {
     "maxCharsPerFile": 10000,
     "dryRun": dry_run,
     "outPath": out_path,
+  "env": {
+    "LITELLM_SSL_VERIFY": "true" if litellm_ssl_verify else "false",
+    "LITELLM_CA_BUNDLE": litellm_ca_bundle,
+  },
 }
 print(json.dumps(body))
 PY
