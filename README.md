@@ -135,7 +135,7 @@ This test now validates:
 
 ### Example Script (`example.sh`)
 
-To run a simple local streaming request demo (including `sessionId` and `contextFiles`), start the server first and then run:
+To run a local end-to-end demo (`/agent/run`, `/insight/run`, `/graph/run`), start the server first and then run:
 
 ```bash
 ./example.sh
@@ -152,6 +152,18 @@ The script sends `POST /agent/run` with:
 - `args: ["--model", "ollama-kimi-k2.5"]`
 - one text `contextFiles` item (`content`) and one base64 item (`base64Content`)
 - a generated `sessionId` in the form `demo-<timestamp>`
+
+Then it sends:
+- `POST /insight/run` using files collected from `REPO_PATH` (default: current directory)
+- `POST /graph/run` with a minimal payload (`code`, `file_paths`, `framework_hint`)
+
+Supported overrides:
+- `BASE_URL` (default `http://localhost:8000`)
+- `REPO_PATH` (default current working directory)
+- `OUT_PATH` (default `/tmp/codex-serve-example-out-<timestamp>`)
+- `DRY_RUN` for `/insight/run` (default `false`)
+- `GRAPH_MODEL` (mapped to graph request `env.LITELLM_MODEL` when set)
+- `LITELLM_SSL_VERIFY` and `LITELLM_CA_BUNDLE` (forwarded in request env)
 
 Expected output is NDJSON containing `session`, streamed `stdout`/`stderr`, and a final `exit` object.
 If response timeout is configured server-side and reached, the stream may end with `{"type":"exit","code":124}`.

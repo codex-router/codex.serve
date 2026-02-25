@@ -7,15 +7,20 @@ REPO_PATH="${REPO_PATH:-$(pwd)}"
 DRY_RUN="${DRY_RUN:-false}"
 LITELLM_SSL_VERIFY="${LITELLM_SSL_VERIFY:-false}"
 LITELLM_CA_BUNDLE="${LITELLM_CA_BUNDLE:-}"
+GRAPH_MODEL="${GRAPH_MODEL:-}"
 RUN_DATE="$(date +%Y%m%d-%H%M%S)"
 OUT_PATH="${OUT_PATH:-/tmp/codex-serve-example-out-${RUN_DATE}}"
 
 INSIGHT_PAYLOAD="/tmp/codex-serve-insight-payload-${RUN_DATE}.json"
 INSIGHT_RESPONSE="/tmp/codex-serve-insight-response-${RUN_DATE}.json"
+GRAPH_PAYLOAD="/tmp/codex-serve-graph-payload-${RUN_DATE}.json"
+GRAPH_RESPONSE="/tmp/codex-serve-graph-response-${RUN_DATE}.json"
 
 cleanup() {
   rm -f "${INSIGHT_PAYLOAD}"
   rm -f "${INSIGHT_RESPONSE}"
+  rm -f "${GRAPH_PAYLOAD}"
+  rm -f "${GRAPH_RESPONSE}"
 }
 trap cleanup EXIT
 
@@ -122,6 +127,46 @@ print(f"materializedFiles={len(files)}")
 print(f"materializedOutPath={out_path}")
 print(f"serverOutputDir={data.get('outputDir', '')}")
 PY
+
+echo
+echo "Testing POST ${BASE_URL}/graph/run"
+echo "graphModel=${GRAPH_MODEL}"
+echo "payloadFile=${GRAPH_PAYLOAD}"
+
+python3 - "${GRAPH_MODEL}" > "${GRAPH_PAYLOAD}" <<'PY'
+import json
+import os
+import sys
+
+graph_model = sys.argv[1].strip()
+
+body = {
+  "code": "def run():\n    return 1",
+  "file_paths": ["app.py"],
+  "framework_hint": "python",
+}
+
+env = {}
+for key in ("LITELLM_BASE_URL", "LITELLM_API_KEY", "LITELLM_SSL_VERIFY", "LITELLM_CA_BUNDLE"):
+  value = os.environ.get(key)
+  if value:
+    env[key] = value
+
+if graph_model:
+  env["LITELLM_MODEL"] = graph_model
+
+if env:
+  body["env"] = env
+
+print(json.dumps(body))
+PY
+
+curl -sS -X POST "${BASE_URL}/graph/run" \
+  -H "Content-Type: application/json" \
+  --data-binary "@${GRAPH_PAYLOAD}" \
+  -o "${GRAPH_RESPONSE}"
+
+cat "${GRAPH_RESPONSE}"
 
 echo
 echo "Done. If successful, generated files are written to: ${OUT_PATH}"
