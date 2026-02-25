@@ -52,6 +52,8 @@ The server reads supported agents from `AGENT_LIST` (comma-separated). In local 
 | `AGENT_MODEL` | *(empty)* | Returned model IDs for `GET /models` (comma-separated) |
 | `LITELLM_BASE_URL` | *(unset)* | Default LiteLLM base URL passed to execution container in Docker mode |
 | `LITELLM_API_KEY` | *(unset)* | Default LiteLLM API key passed to execution container in Docker mode |
+| `LITELLM_SSL_VERIFY` | `false` | Default TLS verification behavior for LiteLLM calls (`false` supports self-signed certificates) |
+| `LITELLM_CA_BUNDLE` | *(unset)* | Optional CA bundle path for LiteLLM TLS verification |
 | `LITELLM_MODEL` | *(unset)* | Default model for `POST /agent/run`, and for `POST /insight/run` when using a custom `CODEX_INSIGHT_IMAGE` |
 | `INSIGHT_MODEL` | *(unset)* | Default model used for `POST /insight/run` when `CODEX_INSIGHT_IMAGE` is `craftslab/codex-insight:latest` (mapped to container `LITELLM_MODEL`) |
 | `RUN_RESPONSE_TIMEOUT_SECONDS` | *(unset)* | Optional timeout (seconds) for `POST /agent/run`; `<= 0`, empty, or invalid disables timeout |
@@ -76,7 +78,7 @@ python codex_serve.py
 
 When enabled:
 1. `codex.serve` calls `docker run --rm -i ...` for every request.
-2. `LITELLM_BASE_URL` and `LITELLM_API_KEY` are inherited from `codex.serve` runtime env and passed via `-e` flags.
+2. `LITELLM_BASE_URL`, `LITELLM_API_KEY`, `LITELLM_SSL_VERIFY`, and `LITELLM_CA_BUNDLE` are inherited from `codex.serve` runtime env and passed via `-e` flags.
 3. `AGENT_PROVIDER_NAME` is automatically set from the requested `agent`.
 4. Request `env` values are optional and can override inherited defaults.
 5. `LITELLM_MODEL` is inferred from `--model`/`-m` args when not explicitly provided.
@@ -113,6 +115,7 @@ This configuration:
 - Configures `CODEX_INSIGHT_IMAGE` to `craftslab/codex-insight:latest` for insight generation requests.
 - Configures `GRAPH_BASE_URL` to `http://host.docker.internal:52104` so `POST /graph/run` can reach `codex.graph` started by Docker on the host.
 - Supports `GRAPH_MODEL` for `POST /graph/run` payload env forwarding as `LITELLM_MODEL`.
+- Supports `LITELLM_SSL_VERIFY` (default `false`) and optional `LITELLM_CA_BUNDLE` for LiteLLM/self-signed cert scenarios.
 - Uses `CODEX_GRAPH_IMAGE` (`craftslab/codex-graph:latest`) for auto-start.
 - Sets `RUN_RESPONSE_TIMEOUT_SECONDS` in [docker-compose.yml](docker-compose.yml) (default `300`) to bound `POST /agent/run` response time in container deployments.
 

@@ -263,7 +263,7 @@ def _build_docker_env(agent: str, args: List[str], req_env: Optional[Dict[str, s
     docker_env: Dict[str, str] = {}
 
     # Default LiteLLM settings from codex.serve runtime env (e.g., docker-compose).
-    for env_key in ("LITELLM_BASE_URL", "LITELLM_API_KEY"):
+    for env_key in ("LITELLM_BASE_URL", "LITELLM_API_KEY", "LITELLM_SSL_VERIFY", "LITELLM_CA_BUNDLE"):
         env_val = os.environ.get(env_key)
         if env_val:
             docker_env[env_key] = env_val
@@ -574,7 +574,7 @@ async def _start_graph_backend_with_image() -> tuple[int, str, str]:
         raise HTTPException(status_code=502, detail="CODEX_GRAPH_IMAGE is not configured")
 
     graph_env: Dict[str, str] = {}
-    for env_key in ("LITELLM_BASE_URL", "LITELLM_API_KEY"):
+    for env_key in ("LITELLM_BASE_URL", "LITELLM_API_KEY", "LITELLM_SSL_VERIFY", "LITELLM_CA_BUNDLE"):
         env_val = os.environ.get(env_key)
         if env_val:
             graph_env[env_key] = env_val
@@ -687,7 +687,7 @@ async def run_insight(req: InsightRunRequest):
         response_output_dir = tempfile.mkdtemp(prefix="codex-insight-out-")
 
     docker_env: Dict[str, str] = {}
-    for env_key in ("LITELLM_BASE_URL", "LITELLM_API_KEY"):
+    for env_key in ("LITELLM_BASE_URL", "LITELLM_API_KEY", "LITELLM_SSL_VERIFY", "LITELLM_CA_BUNDLE"):
         env_val = os.environ.get(env_key)
         if env_val:
             docker_env[env_key] = env_val
@@ -806,7 +806,7 @@ async def run_graph(req: GraphRunRequest):
         payload["http_connections"] = req.http_connections
 
     graph_env: Dict[str, str] = {}
-    for env_key in ("LITELLM_BASE_URL", "LITELLM_API_KEY"):
+    for env_key in ("LITELLM_BASE_URL", "LITELLM_API_KEY", "LITELLM_SSL_VERIFY", "LITELLM_CA_BUNDLE"):
         env_val = os.environ.get(env_key)
         if env_val:
             graph_env[env_key] = env_val
