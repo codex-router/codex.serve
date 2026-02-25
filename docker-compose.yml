@@ -14,7 +14,7 @@ services:
       # Tell codex.serve to use the insight docker image
       - CODEX_INSIGHT_IMAGE=craftslab/codex-insight:latest
       # Supported agent providers (comma-separated)
-      - AGENT_LIST=codex,gemini,opencode,qwen
+      - AGENT_LIST=codex,opencode,qwen
       # Supported model IDs (comma-separated)
       - AGENT_MODEL=ollama-kimi-k2.5,ollama-minimax-m2.5,ollama-qwen3-coder
       - INSIGHT_MODEL=ollama-gemini-3-flash-preview
