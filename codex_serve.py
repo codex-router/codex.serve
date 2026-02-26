@@ -138,8 +138,8 @@ INSIGHT_RESPONSE_TIMEOUT_SECONDS = _parse_response_timeout_seconds(
     os.environ.get("INSIGHT_RESPONSE_TIMEOUT_SECONDS")
 )
 
-GRAPH_RESPONSE_TIMEOUT_SECONDS = _parse_response_timeout_seconds(
-    os.environ.get("GRAPH_RESPONSE_TIMEOUT_SECONDS")
+GRAPH_RESPONSE_TIMEOUT_SECONDS = (
+    _parse_response_timeout_seconds(os.environ.get("GRAPH_RESPONSE_TIMEOUT_SECONDS")) or 120.0
 )
 
 GRAPH_BASE_URL = (os.environ.get("GRAPH_BASE_URL") or "http://localhost:52104").rstrip("/")
