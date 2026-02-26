@@ -22,7 +22,7 @@ services:
       - INSIGHT_MODEL=ollama-gemini-3-flash-preview
       - GRAPH_MODEL=ollama-gemini-3-flash-preview
       # codex.graph backend endpoint for /graph/run proxy
-      - GRAPH_BASE_URL=${GRAPH_BASE_URL:-http://localhost:52104}
+      - GRAPH_BASE_URL=${GRAPH_BASE_URL:-http://host.docker.internal:52104}
       # Enable automatic codex.graph docker compose bootstrap when /graph/run is called
       - GRAPH_AUTO_START=${GRAPH_AUTO_START:-true}
       # optional fixed container name used for codex.graph auto-start

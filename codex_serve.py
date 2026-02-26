@@ -7,6 +7,7 @@ import shutil
 import tempfile
 import urllib.request
 import urllib.error
+import urllib.parse
 import socket
 from pathlib import Path
 from typing import List, Optional, Dict
@@ -154,6 +155,33 @@ GRAPH_CONTAINER_NAME = (os.environ.get("GRAPH_CONTAINER_NAME") or "codex-graph")
 GRAPH_HEALTH_CHECK_TIMEOUT_SECONDS = (
     _parse_response_timeout_seconds(os.environ.get("GRAPH_HEALTH_CHECK_TIMEOUT_SECONDS")) or 60.0
 )
+
+
+def _build_graph_base_url_candidates(base_url: str) -> List[str]:
+    candidates: List[str] = []
+    normalized = (base_url or "").strip().rstrip("/")
+    if normalized:
+        candidates.append(normalized)
+
+    if os.path.exists("/.dockerenv") and normalized:
+        try:
+            parsed = urllib.parse.urlparse(normalized)
+            host = (parsed.hostname or "").lower()
+            if host in {"localhost", "127.0.0.1", "::1"}:
+                replacement = "host.docker.internal"
+                if host == "::1":
+                    replacement = "[host.docker.internal]"
+                alt_netloc = parsed.netloc.replace(parsed.hostname, replacement)
+                alternative = urllib.parse.urlunparse(parsed._replace(netloc=alt_netloc)).rstrip("/")
+                if alternative and alternative not in candidates:
+                    candidates.append(alternative)
+        except Exception:
+            pass
+
+    return candidates
+
+
+GRAPH_BASE_URL_CANDIDATES = _build_graph_base_url_candidates(GRAPH_BASE_URL)
 
 GRAPH_START_LOCK = asyncio.Lock()
 
@@ -547,12 +575,27 @@ async def _get_json(url: str, timeout_seconds: Optional[float]) -> tuple[int, st
 
 
 async def _is_graph_healthy() -> bool:
-    health_url = f"{GRAPH_BASE_URL}/health"
-    try:
-        status_code, _ = await _get_json(health_url, timeout_seconds=5.0)
-    except Exception:
-        return False
-    return 200 <= status_code < 300
+    for base_url in GRAPH_BASE_URL_CANDIDATES:
+        health_url = f"{base_url}/health"
+        try:
+            status_code, _ = await _get_json(health_url, timeout_seconds=5.0)
+        except Exception:
+            continue
+        if 200 <= status_code < 300:
+            return True
+    return False
+
+
+async def _resolve_graph_base_url_for_requests() -> str:
+    for base_url in GRAPH_BASE_URL_CANDIDATES:
+        health_url = f"{base_url}/health"
+        try:
+            status_code, _ = await _get_json(health_url, timeout_seconds=5.0)
+        except Exception:
+            continue
+        if 200 <= status_code < 300:
+            return base_url
+    return GRAPH_BASE_URL
 
 
 async def _is_graph_container_running() -> bool:
@@ -792,6 +835,7 @@ async def run_insight(req: InsightRunRequest):
 @app.post("/graph/run", response_model=GraphRunResponse)
 async def run_graph(req: GraphRunRequest):
     await _ensure_graph_backend_ready()
+    graph_base_url = await _resolve_graph_base_url_for_requests()
 
     code = (req.code or "").strip()
     file_paths = req.file_paths or []
@@ -834,7 +878,7 @@ async def run_graph(req: GraphRunRequest):
     if graph_env:
         payload["env"] = graph_env
 
-    graph_analyze_url = f"{GRAPH_BASE_URL}/analyze"
+    graph_analyze_url = f"{graph_base_url}/analyze"
     timeout_message = (
         "Request timed out while waiting for codex.graph response "
         f"({GRAPH_RESPONSE_TIMEOUT_SECONDS}s)."
