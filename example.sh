@@ -1,6 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_URL="${BASE_URL:-http://localhost:8000}"
 SESSION_ID="demo-$(date +%s)"
 REPO_PATH="${REPO_PATH:-$(pwd)}"
@@ -10,6 +11,8 @@ LITELLM_CA_BUNDLE="${LITELLM_CA_BUNDLE:-}"
 GRAPH_MODEL="${GRAPH_MODEL:-}"
 GRAPH_MAX_RETRIES="${GRAPH_MAX_RETRIES:-3}"
 GRAPH_RETRY_DELAY_SECONDS="${GRAPH_RETRY_DELAY_SECONDS:-10}"
+GRAPH_STARTUP_WAIT_SECONDS="${GRAPH_STARTUP_WAIT_SECONDS:-240}"
+GRAPH_HEALTH_URL="${GRAPH_HEALTH_URL:-http://localhost:52104/health}"
 RUN_DATE="$(date +%Y%m%d-%H%M%S)"
 OUT_PATH="${OUT_PATH:-/tmp/codex-serve-example-out-${RUN_DATE}}"
 
@@ -17,6 +20,54 @@ INSIGHT_PAYLOAD="/tmp/codex-serve-insight-payload-${RUN_DATE}.json"
 INSIGHT_RESPONSE="/tmp/codex-serve-insight-response-${RUN_DATE}.json"
 GRAPH_PAYLOAD="/tmp/codex-serve-graph-payload-${RUN_DATE}.json"
 GRAPH_RESPONSE="/tmp/codex-serve-graph-response-${RUN_DATE}.json"
+
+resolve_graph_model_from_compose() {
+  local compose_file="${COMPOSE_FILE:-${SCRIPT_DIR}/docker-compose.yml}"
+  local line raw
+
+  [[ -f "${compose_file}" ]] || return 0
+
+  line="$(grep -E '^[[:space:]]*-[[:space:]]*GRAPH_MODEL=' "${compose_file}" | head -n 1 || true)"
+  [[ -n "${line}" ]] || return 0
+
+  raw="${line#*=}"
+  raw="$(printf '%s' "${raw}" | sed -E 's/[[:space:]]+$//')"
+
+  if [[ "${raw}" =~ ^\$\{GRAPH_MODEL:-([^}]*)\}$ ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+    return 0
+  fi
+
+  if [[ "${raw}" =~ ^\$\{GRAPH_MODEL\}$ ]]; then
+    return 0
+  fi
+
+  printf '%s' "${raw}"
+}
+
+wait_for_graph_health() {
+  local started_at elapsed
+
+  started_at="$(date +%s)"
+  while true; do
+    if curl -sS -f "${GRAPH_HEALTH_URL}" >/dev/null 2>&1; then
+      return 0
+    fi
+
+    elapsed=$(( $(date +%s) - started_at ))
+    if [[ "${elapsed}" -ge "${GRAPH_STARTUP_WAIT_SECONDS}" ]]; then
+      return 1
+    fi
+
+    sleep 2
+  done
+}
+
+if [[ -z "${GRAPH_MODEL}" ]]; then
+  GRAPH_MODEL="$(resolve_graph_model_from_compose)"
+fi
+
+GRAPH_MODEL_DISPLAY="${GRAPH_MODEL:-<server-default>}"
 
 cleanup() {
   rm -f "${INSIGHT_PAYLOAD}"
@@ -88,10 +139,10 @@ body = {
     "maxCharsPerFile": 10000,
     "dryRun": dry_run,
     "outPath": out_path,
-  "env": {
-    "LITELLM_SSL_VERIFY": "true" if litellm_ssl_verify else "false",
-    "LITELLM_CA_BUNDLE": litellm_ca_bundle,
-  },
+    "env": {
+      "LITELLM_SSL_VERIFY": "true" if litellm_ssl_verify else "false",
+      "LITELLM_CA_BUNDLE": litellm_ca_bundle,
+    },
 }
 print(json.dumps(body))
 PY
@@ -132,9 +183,11 @@ PY
 
 echo
 echo "Testing POST ${BASE_URL}/graph/run"
-echo "graphModel=${GRAPH_MODEL}"
+echo "graphModel=${GRAPH_MODEL_DISPLAY}"
 echo "graphMaxRetries=${GRAPH_MAX_RETRIES}"
 echo "graphRetryDelaySeconds=${GRAPH_RETRY_DELAY_SECONDS}"
+echo "graphStartupWaitSeconds=${GRAPH_STARTUP_WAIT_SECONDS}"
+echo "graphHealthUrl=${GRAPH_HEALTH_URL}"
 echo "payloadFile=${GRAPH_PAYLOAD}"
 
 python3 - "${GRAPH_MODEL}" > "${GRAPH_PAYLOAD}" <<'PY'
@@ -180,14 +233,25 @@ while true; do
   if [[ "${graph_status_code}" == "504" ]] && \
      grep -q "Timed out waiting for codex.graph health endpoint after startup" "${GRAPH_RESPONSE}" && \
      [[ "${graph_attempt}" -lt "${GRAPH_MAX_RETRIES}" ]]; then
-    echo "graph/run attempt ${graph_attempt}/${GRAPH_MAX_RETRIES} timed out during codex.graph startup; retrying in ${GRAPH_RETRY_DELAY_SECONDS}s..."
+    echo "graph/run attempt ${graph_attempt}/${GRAPH_MAX_RETRIES} timed out during codex.graph startup."
+    echo "Waiting for codex.graph health at ${GRAPH_HEALTH_URL} (up to ${GRAPH_STARTUP_WAIT_SECONDS}s) before next retry..."
+    if wait_for_graph_health; then
+      echo "codex.graph health endpoint is now ready; retrying graph/run immediately."
+    else
+      echo "codex.graph health endpoint is still not ready; continuing with retry delay ${GRAPH_RETRY_DELAY_SECONDS}s."
+      sleep "${GRAPH_RETRY_DELAY_SECONDS}"
+    fi
     graph_attempt=$((graph_attempt + 1))
-    sleep "${GRAPH_RETRY_DELAY_SECONDS}"
     continue
   fi
 
   echo "graph/run failed with HTTP ${graph_status_code}."
   cat "${GRAPH_RESPONSE}"
+  if command -v docker >/dev/null 2>&1; then
+    echo
+    echo "Last 80 lines from docker logs codex-graph (if container exists):"
+    docker logs --tail 80 codex-graph 2>/dev/null || true
+  fi
   exit 1
 done
 
