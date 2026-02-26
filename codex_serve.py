@@ -142,7 +142,7 @@ GRAPH_RESPONSE_TIMEOUT_SECONDS = _parse_response_timeout_seconds(
 )
 
 GRAPH_BASE_URL = (os.environ.get("GRAPH_BASE_URL") or "http://localhost:52104").rstrip("/")
-GRAPH_MODEL = (os.environ.get("GRAPH_MODEL") or "").strip()
+GRAPH_MODEL = (os.environ.get("GRAPH_MODEL") or os.environ.get("LITELLM_MODEL") or "").strip()
 CODEX_GRAPH_IMAGE = (os.environ.get("CODEX_GRAPH_IMAGE") or "craftslab/codex-graph:latest").strip()
 GRAPH_AUTO_START_ENABLED = (os.environ.get("GRAPH_AUTO_START") or "true").strip().lower() in (
     "1",
@@ -818,11 +818,18 @@ async def run_graph(req: GraphRunRequest):
         if env_val:
             graph_env[env_key] = env_val
 
-    if GRAPH_MODEL:
-        graph_env["LITELLM_MODEL"] = GRAPH_MODEL
-
     request_env = req.env or {}
+    request_graph_model = (request_env.get("GRAPH_MODEL") or "").strip()
+    request_litellm_model = (request_env.get("LITELLM_MODEL") or "").strip()
+
     graph_env.update(request_env)
+    graph_env.pop("GRAPH_MODEL", None)
+
+    selected_model = request_graph_model or request_litellm_model or GRAPH_MODEL
+    if selected_model:
+        graph_env["LITELLM_MODEL"] = selected_model
+    else:
+        graph_env.pop("LITELLM_MODEL", None)
 
     if graph_env:
         payload["env"] = graph_env

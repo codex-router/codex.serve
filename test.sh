@@ -573,7 +573,7 @@ PY
 GRAPH_PROXY_STATUS="$(curl -sS -o "${GRAPH_PROXY_BODY}" -w "%{http_code}" \
 	-X POST "http://127.0.0.1:${SERVE_PORT}/graph/run" \
 	-H "Content-Type: application/json" \
-	-d '{"code":"def run():\n    return 1","file_paths":["app.py"],"env":{"LITELLM_MODEL":"graph-test-model","LITELLM_SSL_VERIFY":"false","LITELLM_CA_BUNDLE":""}}')"
+	-d '{"code":"def run():\n    return 1","file_paths":["app.py"],"env":{"GRAPH_MODEL":"graph-test-model","LITELLM_SSL_VERIFY":"false","LITELLM_CA_BUNDLE":""}}')"
 
 if [ "${GRAPH_PROXY_STATUS}" != "502" ] && [ "${GRAPH_PROXY_STATUS}" != "504" ]; then
 	echo "Expected HTTP 502/504 from /graph/run when GRAPH_BASE_URL is unreachable, got ${GRAPH_PROXY_STATUS}"

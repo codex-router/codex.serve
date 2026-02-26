@@ -60,7 +60,7 @@ The server reads supported agents from `AGENT_LIST` (comma-separated). In local 
 | `CODEX_INSIGHT_IMAGE` | `craftslab/codex-insight:latest` | Docker image used by `POST /insight/run` |
 | `INSIGHT_RESPONSE_TIMEOUT_SECONDS` | *(unset)* | Optional timeout (seconds) for `POST /insight/run`; `<= 0`, empty, or invalid disables timeout |
 | `GRAPH_BASE_URL` | `http://localhost:52104` | Base URL for `codex.graph` backend used by `POST /graph/run` (proxied to `${GRAPH_BASE_URL}/analyze`) |
-| `GRAPH_MODEL` | *(unset)* | Default graph model for `POST /graph/run` (mapped to forwarded payload env `LITELLM_MODEL`) |
+| `GRAPH_MODEL` | *(unset)* | Default graph model for `POST /graph/run` (mapped to forwarded payload env `LITELLM_MODEL`; falls back to `LITELLM_MODEL` when unset) |
 | `CODEX_GRAPH_IMAGE` | `craftslab/codex-graph:latest` | Docker image used to auto-start `codex.graph` backend when needed |
 | `GRAPH_AUTO_START` | `true` | Automatically starts `codex.graph` container from `CODEX_GRAPH_IMAGE` when `/graph/run` detects backend is unavailable |
 | `GRAPH_CONTAINER_NAME` | `codex-graph` | Optional container name used for auto-started `codex.graph` backend |
@@ -426,9 +426,11 @@ Request body fields are forwarded to `codex.graph /analyze`:
 `env` is optional and can override forwarded defaults from `codex.serve`:
 - `LITELLM_BASE_URL`
 - `LITELLM_API_KEY`
-- `LITELLM_MODEL` (default resolved from `GRAPH_MODEL`)
+- `GRAPH_MODEL` (preferred alias; mapped to `LITELLM_MODEL`)
+- `LITELLM_MODEL` (supported; used when `GRAPH_MODEL` is not provided)
 
-For `codex.graph` Docker compose startup, set `LITELLM_MODEL` in its environment (`backend/.env` or shell env) as documented in [README_codex.graph.md](../codex.graph/README_codex.graph.md).
+For `codex.graph` Docker compose startup via `codex.serve`, set `GRAPH_MODEL` on `codex.serve` (it is propagated as container `LITELLM_MODEL`).
+If you run `codex.graph` directly, set `LITELLM_MODEL` in its own environment (`backend/.env` or shell env) as documented in [README_codex.graph.md](../codex.graph/README_codex.graph.md).
 
 Response body is normalized and returned as:
 

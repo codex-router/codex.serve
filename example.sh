@@ -153,7 +153,7 @@ for key in ("LITELLM_BASE_URL", "LITELLM_API_KEY", "LITELLM_SSL_VERIFY", "LITELL
     env[key] = value
 
 if graph_model:
-  env["LITELLM_MODEL"] = graph_model
+  env["GRAPH_MODEL"] = graph_model
 
 if env:
   body["env"] = env
