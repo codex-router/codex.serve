@@ -550,6 +550,63 @@ async def _post_json(url: str, payload: Dict, timeout_seconds: Optional[float]) 
     return await asyncio.to_thread(_do_post)
 
 
+def _extract_nested_detail_text(value) -> str:
+    current = value
+    for _ in range(3):
+        if isinstance(current, dict) and "detail" in current:
+            current = current.get("detail")
+            continue
+        if isinstance(current, str):
+            stripped = current.strip()
+            if not stripped:
+                return ""
+            if stripped.startswith("{") or stripped.startswith("["):
+                try:
+                    current = json.loads(stripped)
+                    continue
+                except Exception:
+                    return stripped
+            return stripped
+        if current is None:
+            return ""
+        if isinstance(current, (list, dict)):
+            try:
+                return json.dumps(current, ensure_ascii=False)
+            except Exception:
+                return str(current)
+        return str(current).strip()
+    return str(current).strip() if current is not None else ""
+
+
+def _normalize_graph_upstream_error(status_code: int, response_body: str) -> str:
+    raw = (response_body or "").strip()
+    if not raw:
+        return f"codex.graph returned status {status_code} with an empty response body"
+
+    detail = ""
+    try:
+        parsed = json.loads(raw)
+        detail = _extract_nested_detail_text(parsed)
+    except Exception:
+        detail = _extract_nested_detail_text(raw)
+
+    normalized = (detail or "").strip()
+    if not normalized:
+        return (
+            f"codex.graph returned status {status_code} with an empty error detail. "
+            "Check codex.graph backend logs and LiteLLM configuration."
+        )
+
+    lowered = normalized.lower()
+    if lowered == "analysis failed:" or lowered == "analysis failed":
+        return (
+            f"codex.graph analysis failed (status {status_code}) with no root-cause detail. "
+            "Check codex.graph backend logs and LiteLLM configuration."
+        )
+
+    return normalized
+
+
 async def _get_json(url: str, timeout_seconds: Optional[float]) -> tuple[int, str]:
     def _do_get() -> tuple[int, str]:
         req = urllib.request.Request(
@@ -900,7 +957,7 @@ async def run_graph(req: GraphRunRequest):
         raise HTTPException(status_code=502, detail=f"Failed to call codex.graph: {exc}") from exc
 
     if status_code < 200 or status_code >= 300:
-        detail = response_body.strip() or f"codex.graph returned status {status_code}"
+        detail = _normalize_graph_upstream_error(status_code, response_body)
         raise HTTPException(status_code=502, detail=detail)
 
     try:
