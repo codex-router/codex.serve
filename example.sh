@@ -8,6 +8,8 @@ DRY_RUN="${DRY_RUN:-false}"
 LITELLM_SSL_VERIFY="${LITELLM_SSL_VERIFY:-false}"
 LITELLM_CA_BUNDLE="${LITELLM_CA_BUNDLE:-}"
 GRAPH_MODEL="${GRAPH_MODEL:-}"
+GRAPH_MAX_RETRIES="${GRAPH_MAX_RETRIES:-3}"
+GRAPH_RETRY_DELAY_SECONDS="${GRAPH_RETRY_DELAY_SECONDS:-10}"
 RUN_DATE="$(date +%Y%m%d-%H%M%S)"
 OUT_PATH="${OUT_PATH:-/tmp/codex-serve-example-out-${RUN_DATE}}"
 
@@ -131,6 +133,8 @@ PY
 echo
 echo "Testing POST ${BASE_URL}/graph/run"
 echo "graphModel=${GRAPH_MODEL}"
+echo "graphMaxRetries=${GRAPH_MAX_RETRIES}"
+echo "graphRetryDelaySeconds=${GRAPH_RETRY_DELAY_SECONDS}"
 echo "payloadFile=${GRAPH_PAYLOAD}"
 
 python3 - "${GRAPH_MODEL}" > "${GRAPH_PAYLOAD}" <<'PY'
@@ -161,10 +165,31 @@ if env:
 print(json.dumps(body))
 PY
 
-curl -sS -X POST "${BASE_URL}/graph/run" \
-  -H "Content-Type: application/json" \
-  --data-binary "@${GRAPH_PAYLOAD}" \
-  -o "${GRAPH_RESPONSE}"
+graph_attempt=1
+while true; do
+  graph_status_code="$(curl -sS -X POST "${BASE_URL}/graph/run" \
+    -H "Content-Type: application/json" \
+    --data-binary "@${GRAPH_PAYLOAD}" \
+    -o "${GRAPH_RESPONSE}" \
+    -w "%{http_code}")"
+
+  if [[ "${graph_status_code}" -ge 200 && "${graph_status_code}" -lt 300 ]]; then
+    break
+  fi
+
+  if [[ "${graph_status_code}" == "504" ]] && \
+     grep -q "Timed out waiting for codex.graph health endpoint after startup" "${GRAPH_RESPONSE}" && \
+     [[ "${graph_attempt}" -lt "${GRAPH_MAX_RETRIES}" ]]; then
+    echo "graph/run attempt ${graph_attempt}/${GRAPH_MAX_RETRIES} timed out during codex.graph startup; retrying in ${GRAPH_RETRY_DELAY_SECONDS}s..."
+    graph_attempt=$((graph_attempt + 1))
+    sleep "${GRAPH_RETRY_DELAY_SECONDS}"
+    continue
+  fi
+
+  echo "graph/run failed with HTTP ${graph_status_code}."
+  cat "${GRAPH_RESPONSE}"
+  exit 1
+done
 
 cat "${GRAPH_RESPONSE}"
 
