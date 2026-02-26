@@ -62,13 +62,13 @@ if ! grep -qi "^ID=ubuntu" /etc/os-release; then
 fi
 
 echo "- Verifying required agent binaries"
-for cmd in codex opencode qwen; do
+for cmd in codex opencode qwen kimi; do
 	command -v "$cmd" >/dev/null
 	"$cmd" --version >/dev/null
 done
 
 echo "- Verifying configured agent path env vars"
-for path_var in CODEX_PATH OPENCODE_PATH QWEN_PATH; do
+for path_var in CODEX_PATH OPENCODE_PATH QWEN_PATH KIMI_PATH; do
 	value="${!path_var}"
 	[ -n "$value" ]
 	[ -x "$value" ]

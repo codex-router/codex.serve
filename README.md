@@ -205,8 +205,8 @@ curl "http://localhost:8000/agents"
 
 ```json
 {
-  "agents": ["codex"],
-  "count": 1
+  "agents": ["codex", "opencode", "qwen", "kimi"],
+  "count": 4
 }
 ```
 

@@ -1074,9 +1074,9 @@ async def run_agent(req: RunRequest):
         normalized_args = normalized_req_args
         docker_env = _build_docker_env(req.agent, normalized_req_args, req.env)
 
-        # opencode and codex in codex.agent expect model via LITELLM_MODEL and will
+        # opencode, codex, and kimi in codex.agent expect model via LITELLM_MODEL and will
         # inject a provider-aware --model value for non-interactive runs.
-        if req.agent in ("opencode", "codex"):
+        if req.agent in ("opencode", "codex", "kimi"):
             normalized_args = _strip_model_args(normalized_req_args)
 
         for k, v in docker_env.items():
