@@ -157,6 +157,29 @@ GRAPH_HEALTH_CHECK_TIMEOUT_SECONDS = (
 )
 
 
+def _parse_non_negative_int(value: Optional[str], default_value: int) -> int:
+    if value is None:
+        return default_value
+    normalized = value.strip()
+    if not normalized:
+        return default_value
+    try:
+        parsed = int(normalized)
+    except ValueError:
+        return default_value
+    return parsed if parsed >= 0 else default_value
+
+
+GRAPH_ANALYZE_MAX_RETRIES = _parse_non_negative_int(
+    os.environ.get("GRAPH_ANALYZE_MAX_RETRIES"),
+    1,
+)
+
+GRAPH_ANALYZE_RETRY_DELAY_SECONDS = (
+    _parse_response_timeout_seconds(os.environ.get("GRAPH_ANALYZE_RETRY_DELAY_SECONDS")) or 2.0
+)
+
+
 def _build_graph_base_url_candidates(base_url: str) -> List[str]:
     candidates: List[str] = []
     normalized = (base_url or "").strip().rstrip("/")
@@ -607,6 +630,39 @@ def _normalize_graph_upstream_error(status_code: int, response_body: str) -> str
     return normalized
 
 
+def _infer_framework_hint(file_paths: List[str]) -> Optional[str]:
+    extension_to_framework = {
+        "py": "python",
+        "java": "java",
+        "kt": "kotlin",
+        "kts": "kotlin",
+        "js": "javascript",
+        "jsx": "javascript",
+        "ts": "typescript",
+        "tsx": "typescript",
+        "go": "go",
+        "rs": "rust",
+        "c": "c",
+        "h": "c",
+        "cc": "cpp",
+        "cpp": "cpp",
+        "cxx": "cpp",
+        "hpp": "cpp",
+        "cs": "csharp",
+        "swift": "swift",
+        "php": "php",
+        "rb": "ruby",
+    }
+    for raw_path in file_paths or []:
+        path = (raw_path or "").strip().lower()
+        if not path or "." not in path:
+            continue
+        ext = path.rsplit(".", 1)[-1].strip()
+        if ext in extension_to_framework:
+            return extension_to_framework[ext]
+    return None
+
+
 async def _get_json(url: str, timeout_seconds: Optional[float]) -> tuple[int, str]:
     def _do_get() -> tuple[int, str]:
         req = urllib.request.Request(
@@ -906,8 +962,9 @@ async def run_graph(req: GraphRunRequest):
         "code": req.code,
         "file_paths": file_paths,
     }
-    if req.framework_hint:
-        payload["framework_hint"] = req.framework_hint
+    framework_hint = (req.framework_hint or "").strip() or (_infer_framework_hint(file_paths) or "")
+    if framework_hint:
+        payload["framework_hint"] = framework_hint
     if req.metadata is not None:
         payload["metadata"] = req.metadata
     if req.http_connections:
@@ -941,23 +998,42 @@ async def run_graph(req: GraphRunRequest):
         f"({GRAPH_RESPONSE_TIMEOUT_SECONDS}s)."
     )
 
-    try:
-        status_code, response_body = await _post_json(
-            graph_analyze_url,
-            payload,
-            GRAPH_RESPONSE_TIMEOUT_SECONDS,
-        )
-    except (TimeoutError, socket.timeout) as exc:
-        raise HTTPException(status_code=504, detail=timeout_message) from exc
-    except urllib.error.URLError as exc:
-        if isinstance(exc.reason, TimeoutError) or isinstance(exc.reason, socket.timeout):
+    status_code = 0
+    response_body = ""
+    max_attempts = GRAPH_ANALYZE_MAX_RETRIES + 1
+    for attempt in range(1, max_attempts + 1):
+        try:
+            status_code, response_body = await _post_json(
+                graph_analyze_url,
+                payload,
+                GRAPH_RESPONSE_TIMEOUT_SECONDS,
+            )
+        except (TimeoutError, socket.timeout) as exc:
+            if attempt < max_attempts:
+                await asyncio.sleep(GRAPH_ANALYZE_RETRY_DELAY_SECONDS)
+                continue
             raise HTTPException(status_code=504, detail=timeout_message) from exc
-        raise HTTPException(status_code=502, detail=f"Failed to call codex.graph: {exc}") from exc
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Failed to call codex.graph: {exc}") from exc
+        except urllib.error.URLError as exc:
+            if isinstance(exc.reason, TimeoutError) or isinstance(exc.reason, socket.timeout):
+                if attempt < max_attempts:
+                    await asyncio.sleep(GRAPH_ANALYZE_RETRY_DELAY_SECONDS)
+                    continue
+                raise HTTPException(status_code=504, detail=timeout_message) from exc
+            raise HTTPException(status_code=502, detail=f"Failed to call codex.graph: {exc}") from exc
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Failed to call codex.graph: {exc}") from exc
 
-    if status_code < 200 or status_code >= 300:
+        if 200 <= status_code < 300:
+            break
+
+        should_retry = status_code >= 500 or status_code == 429
+        if should_retry and attempt < max_attempts:
+            await asyncio.sleep(GRAPH_ANALYZE_RETRY_DELAY_SECONDS)
+            continue
+
         detail = _normalize_graph_upstream_error(status_code, response_body)
+        if attempt > 1:
+            detail = f"{detail} (after {attempt} attempts)"
         raise HTTPException(status_code=502, detail=detail)
 
     try:
