@@ -6,7 +6,7 @@ HTTP server implementation for the Codex Gerrit plugin. This service exposes a R
 
 - Exposes a `POST /agent/run` endpoint to execute agent commands.
 - Exposes a `POST /insight/run` endpoint to execute `codex-insight` Docker jobs and return generated insight pages.
-- Exposes a `POST /graph/run` endpoint to proxy code graph generation to `codex.graph` (`POST /analyze`).
+- Exposes a `POST /graph/run` endpoint to proxy code graph generation (from selected files) to `codex.graph` (`POST /analyze`).
 - Supports automatic `codex.graph` Docker startup from image on `POST /graph/run` and waits for `/health` readiness.
 - Exposes a `POST /sessions/{sessionId}/stop` endpoint to stop an active `/agent/run` session.
 - Exposes a `GET /models` endpoint to return model IDs from `AGENT_MODEL`.
@@ -415,7 +415,7 @@ curl -X POST "http://localhost:8000/graph/run" \
   }'
 ```
 
-Request body fields are forwarded to `codex.graph /analyze`:
+Request body fields are forwarded to `codex.graph /analyze` (typically built from file picker selection in `codex.gerrit #graph`):
 - `code` (required)
 - `file_paths` (required)
 - `framework_hint` (optional)
