@@ -181,6 +181,26 @@ GRAPH_ANALYZE_RETRY_DELAY_SECONDS = (
     _parse_response_timeout_seconds(os.environ.get("GRAPH_ANALYZE_RETRY_DELAY_SECONDS")) or 2.0
 )
 
+REQUEST_QUEUE_WAIT_TIMEOUT_SECONDS = _parse_response_timeout_seconds(
+    os.environ.get("REQUEST_QUEUE_WAIT_TIMEOUT_SECONDS")
+)
+REQUEST_QUEUE_MAX_PENDING = _parse_non_negative_int(
+    os.environ.get("REQUEST_QUEUE_MAX_PENDING"),
+    100,
+)
+AGENT_MAX_CONCURRENT_REQUESTS = _parse_non_negative_int(
+    os.environ.get("AGENT_MAX_CONCURRENT_REQUESTS"),
+    4,
+)
+INSIGHT_MAX_CONCURRENT_REQUESTS = _parse_non_negative_int(
+    os.environ.get("INSIGHT_MAX_CONCURRENT_REQUESTS"),
+    2,
+)
+GRAPH_MAX_CONCURRENT_REQUESTS = _parse_non_negative_int(
+    os.environ.get("GRAPH_MAX_CONCURRENT_REQUESTS"),
+    4,
+)
+
 
 def _build_graph_base_url_candidates(base_url: str) -> List[str]:
     candidates: List[str] = []
@@ -216,9 +236,100 @@ MAX_INSIGHT_FILES = 200
 MAX_INSIGHT_FILE_CHARS = 200_000
 
 
+class _QueueLease:
+    def __init__(self, semaphore: asyncio.Semaphore):
+        self._semaphore = semaphore
+        self._released = False
+
+    def release(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        self._semaphore.release()
+
+
+class RequestAdmissionQueue:
+    def __init__(
+        self,
+        name: str,
+        max_concurrency: int,
+        max_pending: int,
+        wait_timeout_seconds: Optional[float],
+    ):
+        self.name = name
+        self.max_concurrency = max(1, int(max_concurrency))
+        self.max_pending = max(0, int(max_pending))
+        self.wait_timeout_seconds = wait_timeout_seconds
+
+        self._semaphore = asyncio.Semaphore(self.max_concurrency)
+        self._pending_lock = asyncio.Lock()
+        self._pending = 0
+
+    async def acquire(self) -> _QueueLease:
+        async with self._pending_lock:
+            if self._pending >= self.max_pending:
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        f"{self.name} request queue is full "
+                        f"(max pending={self.max_pending})."
+                    ),
+                )
+            self._pending += 1
+
+        acquired = False
+        try:
+            if self.wait_timeout_seconds is None:
+                await self._semaphore.acquire()
+            else:
+                await asyncio.wait_for(
+                    self._semaphore.acquire(),
+                    timeout=self.wait_timeout_seconds,
+                )
+            acquired = True
+        except asyncio.TimeoutError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    f"{self.name} request queue wait timeout "
+                    f"({self.wait_timeout_seconds}s)."
+                ),
+            ) from exc
+        finally:
+            async with self._pending_lock:
+                self._pending -= 1
+
+        if not acquired:
+            raise HTTPException(status_code=503, detail=f"{self.name} request queue unavailable")
+
+        return _QueueLease(self._semaphore)
+
+
 def _is_default_codex_insight_image(image: str) -> bool:
     normalized = (image or "").strip().lower()
     return normalized in {"craftslab/codex-insight:latest", "codex-insight:latest"}
+
+
+AGENT_REQUEST_QUEUE = RequestAdmissionQueue(
+    name="agent.run",
+    max_concurrency=AGENT_MAX_CONCURRENT_REQUESTS,
+    max_pending=REQUEST_QUEUE_MAX_PENDING,
+    wait_timeout_seconds=REQUEST_QUEUE_WAIT_TIMEOUT_SECONDS,
+)
+
+INSIGHT_REQUEST_QUEUE = RequestAdmissionQueue(
+    name="insight.run",
+    max_concurrency=INSIGHT_MAX_CONCURRENT_REQUESTS,
+    max_pending=REQUEST_QUEUE_MAX_PENDING,
+    wait_timeout_seconds=REQUEST_QUEUE_WAIT_TIMEOUT_SECONDS,
+)
+
+GRAPH_REQUEST_QUEUE = RequestAdmissionQueue(
+    name="graph.run",
+    max_concurrency=GRAPH_MAX_CONCURRENT_REQUESTS,
+    max_pending=REQUEST_QUEUE_MAX_PENDING,
+    wait_timeout_seconds=REQUEST_QUEUE_WAIT_TIMEOUT_SECONDS,
+)
 
 
 def _resolve_context_file_content(item: ContextFileItem) -> Optional[str]:
@@ -1068,224 +1179,232 @@ async def stop_session(sessionId: str):
 
 @app.post("/insight/run", response_model=InsightRunResponse)
 async def run_insight(req: InsightRunRequest):
-    uploaded_files = req.files or []
-    if len(uploaded_files) == 0:
-        raise HTTPException(status_code=400, detail="files is required")
-
-    requested_output_dir = _resolve_requested_output_dir(req)
-    if requested_output_dir:
-        response_output_dir = requested_output_dir
-    else:
-        response_output_dir = tempfile.mkdtemp(prefix="codex-insight-out-")
-
-    docker_env: Dict[str, str] = {}
-    for env_key in ("LITELLM_BASE_URL", "LITELLM_API_KEY", "LITELLM_SSL_VERIFY", "LITELLM_CA_BUNDLE"):
-        env_val = os.environ.get(env_key)
-        if env_val:
-            docker_env[env_key] = env_val
-
-    request_env = req.env or {}
-    docker_env.update(request_env)
-
-    if _is_default_codex_insight_image(INSIGHT_DOCKER_IMAGE):
-        docker_env.pop("LITELLM_MODEL", None)
-
-        configured_model = (os.environ.get("INSIGHT_MODEL") or "").strip()
-        request_model_override = (request_env.get("INSIGHT_MODEL") or "").strip()
-        selected_model = request_model_override or configured_model
-
-        if selected_model:
-            docker_env["LITELLM_MODEL"] = selected_model
-    else:
-        configured_model = (os.environ.get("LITELLM_MODEL") or "").strip()
-        if configured_model and "LITELLM_MODEL" not in request_env:
-            docker_env["LITELLM_MODEL"] = configured_model
-    temp_root = tempfile.mkdtemp(prefix="codex-insight-upload-")
-    repo_path = os.path.join(temp_root, "repo")
-    transient_out_path = os.path.join(temp_root, "out")
-    os.makedirs(repo_path, exist_ok=True)
-    os.makedirs(transient_out_path, exist_ok=True)
-
+    queue_lease = await INSIGHT_REQUEST_QUEUE.acquire()
     try:
-        written_count = _write_uploaded_repo_files(repo_path, uploaded_files)
-        if written_count == 0:
-            raise HTTPException(status_code=400, detail="No valid files were provided")
+        uploaded_files = req.files or []
+        if len(uploaded_files) == 0:
+            raise HTTPException(status_code=400, detail="files is required")
 
-        container_name = f"codex-insight-{uuid4().hex}"
-        container_repo = "/tmp/codex-repo"
-        container_out = "/tmp/codex-out"
+        requested_output_dir = _resolve_requested_output_dir(req)
+        if requested_output_dir:
+            response_output_dir = requested_output_dir
+        else:
+            response_output_dir = tempfile.mkdtemp(prefix="codex-insight-out-")
 
-        create_command = ["docker", "create", "--name", container_name]
-        for env_key, env_val in docker_env.items():
-            create_command.extend(["-e", f"{env_key}={env_val}"])
-        create_command.append(INSIGHT_DOCKER_IMAGE)
-        create_command.extend(["--repo", container_repo, "--out", container_out])
-        create_command.extend(_build_insight_args(req))
+        docker_env: Dict[str, str] = {}
+        for env_key in ("LITELLM_BASE_URL", "LITELLM_API_KEY", "LITELLM_SSL_VERIFY", "LITELLM_CA_BUNDLE"):
+            env_val = os.environ.get(env_key)
+            if env_val:
+                docker_env[env_key] = env_val
 
-        create_code, _, create_stderr = await _run_subprocess_capture(create_command)
-        if create_code != 0:
-            raise HTTPException(status_code=400, detail=create_stderr.strip() or "Failed to prepare insight container")
+        request_env = req.env or {}
+        docker_env.update(request_env)
+
+        if _is_default_codex_insight_image(INSIGHT_DOCKER_IMAGE):
+            docker_env.pop("LITELLM_MODEL", None)
+
+            configured_model = (os.environ.get("INSIGHT_MODEL") or "").strip()
+            request_model_override = (request_env.get("INSIGHT_MODEL") or "").strip()
+            selected_model = request_model_override or configured_model
+
+            if selected_model:
+                docker_env["LITELLM_MODEL"] = selected_model
+        else:
+            configured_model = (os.environ.get("LITELLM_MODEL") or "").strip()
+            if configured_model and "LITELLM_MODEL" not in request_env:
+                docker_env["LITELLM_MODEL"] = configured_model
+        temp_root = tempfile.mkdtemp(prefix="codex-insight-upload-")
+        repo_path = os.path.join(temp_root, "repo")
+        transient_out_path = os.path.join(temp_root, "out")
+        os.makedirs(repo_path, exist_ok=True)
+        os.makedirs(transient_out_path, exist_ok=True)
 
         try:
-            cp_in_code, _, cp_in_stderr = await _run_subprocess_capture(
-                ["docker", "cp", f"{repo_path}{os.sep}.", f"{container_name}:{container_repo}"]
-            )
-            if cp_in_code != 0:
-                raise HTTPException(status_code=400, detail=cp_in_stderr.strip() or "Failed to upload files to insight container")
+            written_count = _write_uploaded_repo_files(repo_path, uploaded_files)
+            if written_count == 0:
+                raise HTTPException(status_code=400, detail="No valid files were provided")
 
-            timeout_message = (
-                "Request timed out while waiting for codex-insight response "
-                f"({INSIGHT_RESPONSE_TIMEOUT_SECONDS}s)."
-            )
-            run_code, stdout_text, stderr_text = await _run_subprocess_capture(
-                ["docker", "start", "-a", container_name],
-                timeout=INSIGHT_RESPONSE_TIMEOUT_SECONDS,
-                timeout_message=timeout_message,
-            )
+            container_name = f"codex-insight-{uuid4().hex}"
+            container_repo = "/tmp/codex-repo"
+            container_out = "/tmp/codex-out"
 
-            if run_code == 0:
-                cp_out_code, _, cp_out_stderr = await _run_subprocess_capture(
-                    ["docker", "cp", f"{container_name}:{container_out}{os.sep}.", transient_out_path]
+            create_command = ["docker", "create", "--name", container_name]
+            for env_key, env_val in docker_env.items():
+                create_command.extend(["-e", f"{env_key}={env_val}"])
+            create_command.append(INSIGHT_DOCKER_IMAGE)
+            create_command.extend(["--repo", container_repo, "--out", container_out])
+            create_command.extend(_build_insight_args(req))
+
+            create_code, _, create_stderr = await _run_subprocess_capture(create_command)
+            if create_code != 0:
+                raise HTTPException(status_code=400, detail=create_stderr.strip() or "Failed to prepare insight container")
+
+            try:
+                cp_in_code, _, cp_in_stderr = await _run_subprocess_capture(
+                    ["docker", "cp", f"{repo_path}{os.sep}.", f"{container_name}:{container_repo}"]
                 )
-                missing_output_in_dry_run = (
-                    req.dryRun
-                    and cp_out_code != 0
-                    and "Could not find the file" in cp_out_stderr
-                    and container_out in cp_out_stderr
+                if cp_in_code != 0:
+                    raise HTTPException(status_code=400, detail=cp_in_stderr.strip() or "Failed to upload files to insight container")
+
+                timeout_message = (
+                    "Request timed out while waiting for codex-insight response "
+                    f"({INSIGHT_RESPONSE_TIMEOUT_SECONDS}s)."
                 )
-                if cp_out_code != 0 and not missing_output_in_dry_run:
-                    raise HTTPException(status_code=400, detail=cp_out_stderr.strip() or "Failed to collect insight output")
+                run_code, stdout_text, stderr_text = await _run_subprocess_capture(
+                    ["docker", "start", "-a", container_name],
+                    timeout=INSIGHT_RESPONSE_TIMEOUT_SECONDS,
+                    timeout_message=timeout_message,
+                )
 
-                if cp_out_code == 0:
-                    try:
-                        _copy_tree_contents(transient_out_path, response_output_dir)
-                    except OSError as exc:
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"Failed to write insight output directory: {exc}",
-                        ) from exc
+                if run_code == 0:
+                    cp_out_code, _, cp_out_stderr = await _run_subprocess_capture(
+                        ["docker", "cp", f"{container_name}:{container_out}{os.sep}.", transient_out_path]
+                    )
+                    missing_output_in_dry_run = (
+                        req.dryRun
+                        and cp_out_code != 0
+                        and "Could not find the file" in cp_out_stderr
+                        and container_out in cp_out_stderr
+                    )
+                    if cp_out_code != 0 and not missing_output_in_dry_run:
+                        raise HTTPException(status_code=400, detail=cp_out_stderr.strip() or "Failed to collect insight output")
 
-            insight_files = _collect_insight_files(response_output_dir) if run_code == 0 else []
+                    if cp_out_code == 0:
+                        try:
+                            _copy_tree_contents(transient_out_path, response_output_dir)
+                        except OSError as exc:
+                            raise HTTPException(
+                                status_code=400,
+                                detail=f"Failed to write insight output directory: {exc}",
+                            ) from exc
+
+                insight_files = _collect_insight_files(response_output_dir) if run_code == 0 else []
+            finally:
+                await _run_subprocess_capture(["docker", "rm", "-f", container_name])
         finally:
-            await _run_subprocess_capture(["docker", "rm", "-f", container_name])
-    finally:
-        shutil.rmtree(temp_root, ignore_errors=True)
+            shutil.rmtree(temp_root, ignore_errors=True)
 
-    return InsightRunResponse(
-        stdout=stdout_text,
-        stderr=stderr_text,
-        exit_code=run_code,
-        outputDir=response_output_dir,
-        files=insight_files,
-        count=len(insight_files),
-    )
+        return InsightRunResponse(
+            stdout=stdout_text,
+            stderr=stderr_text,
+            exit_code=run_code,
+            outputDir=response_output_dir,
+            files=insight_files,
+            count=len(insight_files),
+        )
+    finally:
+        queue_lease.release()
 
 
 @app.post("/graph/run", response_model=GraphRunResponse)
 async def run_graph(req: GraphRunRequest):
-    await _ensure_graph_backend_ready()
-    graph_base_url = await _resolve_graph_base_url_for_requests()
+    queue_lease = await GRAPH_REQUEST_QUEUE.acquire()
+    try:
+        await _ensure_graph_backend_ready()
+        graph_base_url = await _resolve_graph_base_url_for_requests()
 
-    code = (req.code or "").strip()
-    file_paths = req.file_paths or []
+        code = (req.code or "").strip()
+        file_paths = req.file_paths or []
 
-    if not code:
-        raise HTTPException(status_code=400, detail="code is required")
-    if not file_paths:
-        raise HTTPException(status_code=400, detail="file_paths is required")
+        if not code:
+            raise HTTPException(status_code=400, detail="code is required")
+        if not file_paths:
+            raise HTTPException(status_code=400, detail="file_paths is required")
 
-    payload: Dict = {
-        "code": req.code,
-        "file_paths": file_paths,
-    }
-    framework_hint = (req.framework_hint or "").strip() or (_infer_framework_hint(file_paths) or "")
-    if framework_hint:
-        payload["framework_hint"] = framework_hint
-    if req.metadata is not None:
-        payload["metadata"] = req.metadata
-    if req.http_connections:
-        payload["http_connections"] = req.http_connections
+        payload: Dict = {
+            "code": req.code,
+            "file_paths": file_paths,
+        }
+        framework_hint = (req.framework_hint or "").strip() or (_infer_framework_hint(file_paths) or "")
+        if framework_hint:
+            payload["framework_hint"] = framework_hint
+        if req.metadata is not None:
+            payload["metadata"] = req.metadata
+        if req.http_connections:
+            payload["http_connections"] = req.http_connections
 
-    graph_env: Dict[str, str] = {}
-    for env_key in ("LITELLM_BASE_URL", "LITELLM_API_KEY", "LITELLM_SSL_VERIFY", "LITELLM_CA_BUNDLE"):
-        env_val = os.environ.get(env_key)
-        if env_val:
-            graph_env[env_key] = env_val
+        graph_env: Dict[str, str] = {}
+        for env_key in ("LITELLM_BASE_URL", "LITELLM_API_KEY", "LITELLM_SSL_VERIFY", "LITELLM_CA_BUNDLE"):
+            env_val = os.environ.get(env_key)
+            if env_val:
+                graph_env[env_key] = env_val
 
-    request_env = req.env or {}
-    request_graph_model = (request_env.get("GRAPH_MODEL") or "").strip()
-    request_litellm_model = (request_env.get("LITELLM_MODEL") or "").strip()
+        request_env = req.env or {}
+        request_graph_model = (request_env.get("GRAPH_MODEL") or "").strip()
+        request_litellm_model = (request_env.get("LITELLM_MODEL") or "").strip()
 
-    graph_env.update(request_env)
-    graph_env.pop("GRAPH_MODEL", None)
+        graph_env.update(request_env)
+        graph_env.pop("GRAPH_MODEL", None)
 
-    selected_model = request_graph_model or request_litellm_model or GRAPH_MODEL
-    if selected_model:
-        graph_env["LITELLM_MODEL"] = selected_model
-    else:
-        graph_env.pop("LITELLM_MODEL", None)
+        selected_model = request_graph_model or request_litellm_model or GRAPH_MODEL
+        if selected_model:
+            graph_env["LITELLM_MODEL"] = selected_model
+        else:
+            graph_env.pop("LITELLM_MODEL", None)
 
-    if graph_env:
-        payload["env"] = graph_env
+        if graph_env:
+            payload["env"] = graph_env
 
-    graph_analyze_url = f"{graph_base_url}/analyze"
-    timeout_message = (
-        "Request timed out while waiting for codex.graph response "
-        f"({GRAPH_RESPONSE_TIMEOUT_SECONDS}s)."
-    )
+        graph_analyze_url = f"{graph_base_url}/analyze"
+        timeout_message = (
+            "Request timed out while waiting for codex.graph response "
+            f"({GRAPH_RESPONSE_TIMEOUT_SECONDS}s)."
+        )
 
-    status_code = 0
-    response_body = ""
-    max_attempts = GRAPH_ANALYZE_MAX_RETRIES + 1
-    for attempt in range(1, max_attempts + 1):
-        try:
-            status_code, response_body = await _post_json(
-                graph_analyze_url,
-                payload,
-                GRAPH_RESPONSE_TIMEOUT_SECONDS,
-            )
-        except (TimeoutError, socket.timeout) as exc:
-            if attempt < max_attempts:
-                await asyncio.sleep(GRAPH_ANALYZE_RETRY_DELAY_SECONDS)
-                continue
-            raise HTTPException(status_code=504, detail=timeout_message) from exc
-        except urllib.error.URLError as exc:
-            if isinstance(exc.reason, TimeoutError) or isinstance(exc.reason, socket.timeout):
+        status_code = 0
+        response_body = ""
+        max_attempts = GRAPH_ANALYZE_MAX_RETRIES + 1
+        for attempt in range(1, max_attempts + 1):
+            try:
+                status_code, response_body = await _post_json(
+                    graph_analyze_url,
+                    payload,
+                    GRAPH_RESPONSE_TIMEOUT_SECONDS,
+                )
+            except (TimeoutError, socket.timeout) as exc:
                 if attempt < max_attempts:
                     await asyncio.sleep(GRAPH_ANALYZE_RETRY_DELAY_SECONDS)
                     continue
                 raise HTTPException(status_code=504, detail=timeout_message) from exc
-            raise HTTPException(status_code=502, detail=f"Failed to call codex.graph: {exc}") from exc
-        except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"Failed to call codex.graph: {exc}") from exc
+            except urllib.error.URLError as exc:
+                if isinstance(exc.reason, TimeoutError) or isinstance(exc.reason, socket.timeout):
+                    if attempt < max_attempts:
+                        await asyncio.sleep(GRAPH_ANALYZE_RETRY_DELAY_SECONDS)
+                        continue
+                    raise HTTPException(status_code=504, detail=timeout_message) from exc
+                raise HTTPException(status_code=502, detail=f"Failed to call codex.graph: {exc}") from exc
+            except Exception as exc:
+                raise HTTPException(status_code=502, detail=f"Failed to call codex.graph: {exc}") from exc
 
-        if 200 <= status_code < 300:
-            break
+            if 200 <= status_code < 300:
+                break
 
-        should_retry = status_code >= 500 or status_code == 429
-        if should_retry and attempt < max_attempts:
-            await asyncio.sleep(GRAPH_ANALYZE_RETRY_DELAY_SECONDS)
-            continue
+            should_retry = status_code >= 500 or status_code == 429
+            if should_retry and attempt < max_attempts:
+                await asyncio.sleep(GRAPH_ANALYZE_RETRY_DELAY_SECONDS)
+                continue
 
-        detail = _normalize_graph_upstream_error(status_code, response_body)
-        if attempt > 1:
-            detail = f"{detail} (after {attempt} attempts)"
-        raise HTTPException(status_code=502, detail=detail)
+            detail = _normalize_graph_upstream_error(status_code, response_body)
+            if attempt > 1:
+                detail = f"{detail} (after {attempt} attempts)"
+            raise HTTPException(status_code=502, detail=detail)
 
-    try:
-        parsed = json.loads(response_body) if response_body.strip() else {}
-    except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=502, detail="Invalid JSON response from codex.graph") from exc
+        try:
+            parsed = json.loads(response_body) if response_body.strip() else {}
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=502, detail="Invalid JSON response from codex.graph") from exc
 
-    graph = parsed.get("graph")
-    if not isinstance(graph, dict):
-        raise HTTPException(status_code=502, detail="Invalid /analyze response from codex.graph: missing graph")
+        graph = parsed.get("graph")
+        if not isinstance(graph, dict):
+            raise HTTPException(status_code=502, detail="Invalid /analyze response from codex.graph: missing graph")
 
-    return GraphRunResponse(
-        graph=graph,
-        usage=parsed.get("usage"),
-        cost=parsed.get("cost"),
-    )
+        return GraphRunResponse(
+            graph=graph,
+            usage=parsed.get("usage"),
+            cost=parsed.get("cost"),
+        )
+    finally:
+        queue_lease.release()
 
 @app.post("/agent/run")
 async def run_agent(req: RunRequest):
@@ -1331,6 +1450,8 @@ async def run_agent(req: RunRequest):
         command = [executable] + normalized_req_args
         if req.env:
             popen_env.update(req.env)
+
+    queue_lease = await AGENT_REQUEST_QUEUE.acquire()
 
     async def stream_generator():
         read_tasks = []
@@ -1437,6 +1558,7 @@ async def run_agent(req: RunRequest):
             if read_tasks:
                 await asyncio.gather(*read_tasks, return_exceptions=True)
             await _unregister_session(sessionId, process)
+            queue_lease.release()
 
     return StreamingResponse(stream_generator(), media_type="application/x-ndjson")
 

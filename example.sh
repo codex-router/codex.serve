@@ -13,6 +13,8 @@ GRAPH_MAX_RETRIES="${GRAPH_MAX_RETRIES:-3}"
 GRAPH_RETRY_DELAY_SECONDS="${GRAPH_RETRY_DELAY_SECONDS:-10}"
 GRAPH_STARTUP_WAIT_SECONDS="${GRAPH_STARTUP_WAIT_SECONDS:-240}"
 GRAPH_HEALTH_URL="${GRAPH_HEALTH_URL:-http://localhost:52104/health}"
+QUEUE_MAX_RETRIES="${QUEUE_MAX_RETRIES:-3}"
+QUEUE_RETRY_DELAY_SECONDS="${QUEUE_RETRY_DELAY_SECONDS:-3}"
 RUN_DATE="$(date +%Y%m%d-%H%M%S)"
 OUT_PATH="${OUT_PATH:-/tmp/codex-serve-example-out-${RUN_DATE}}"
 
@@ -147,10 +149,29 @@ body = {
 print(json.dumps(body))
 PY
 
-curl -sS -X POST "${BASE_URL}/insight/run" \
-  -H "Content-Type: application/json" \
-  --data-binary "@${INSIGHT_PAYLOAD}" \
-  -o "${INSIGHT_RESPONSE}"
+insight_attempt=1
+while true; do
+  insight_status_code="$(curl -sS -X POST "${BASE_URL}/insight/run" \
+    -H "Content-Type: application/json" \
+    --data-binary "@${INSIGHT_PAYLOAD}" \
+    -o "${INSIGHT_RESPONSE}" \
+    -w "%{http_code}")"
+
+  if [[ "${insight_status_code}" -ge 200 && "${insight_status_code}" -lt 300 ]]; then
+    break
+  fi
+
+  if [[ "${insight_status_code}" == "503" ]] && [[ "${insight_attempt}" -lt "${QUEUE_MAX_RETRIES}" ]]; then
+    echo "insight/run attempt ${insight_attempt}/${QUEUE_MAX_RETRIES} returned 503 (queue backpressure), retrying in ${QUEUE_RETRY_DELAY_SECONDS}s..."
+    sleep "${QUEUE_RETRY_DELAY_SECONDS}"
+    insight_attempt=$((insight_attempt + 1))
+    continue
+  fi
+
+  echo "insight/run failed with HTTP ${insight_status_code}."
+  cat "${INSIGHT_RESPONSE}"
+  exit 1
+done
 
 cat "${INSIGHT_RESPONSE}"
 
@@ -188,6 +209,8 @@ echo "graphMaxRetries=${GRAPH_MAX_RETRIES}"
 echo "graphRetryDelaySeconds=${GRAPH_RETRY_DELAY_SECONDS}"
 echo "graphStartupWaitSeconds=${GRAPH_STARTUP_WAIT_SECONDS}"
 echo "graphHealthUrl=${GRAPH_HEALTH_URL}"
+echo "queueMaxRetries=${QUEUE_MAX_RETRIES}"
+echo "queueRetryDelaySeconds=${QUEUE_RETRY_DELAY_SECONDS}"
 echo "payloadFile=${GRAPH_PAYLOAD}"
 
 python3 - "${GRAPH_MODEL}" > "${GRAPH_PAYLOAD}" <<'PY'
@@ -228,6 +251,13 @@ while true; do
 
   if [[ "${graph_status_code}" -ge 200 && "${graph_status_code}" -lt 300 ]]; then
     break
+  fi
+
+  if [[ "${graph_status_code}" == "503" ]] && [[ "${graph_attempt}" -lt "${GRAPH_MAX_RETRIES}" ]]; then
+    echo "graph/run attempt ${graph_attempt}/${GRAPH_MAX_RETRIES} returned 503 (queue backpressure), retrying in ${QUEUE_RETRY_DELAY_SECONDS}s..."
+    sleep "${QUEUE_RETRY_DELAY_SECONDS}"
+    graph_attempt=$((graph_attempt + 1))
+    continue
   fi
 
   if [[ "${graph_status_code}" == "504" ]] && \

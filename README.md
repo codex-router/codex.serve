@@ -7,6 +7,7 @@ HTTP server implementation for the Codex Gerrit plugin. This service exposes a R
 - Exposes a `POST /agent/run` endpoint to execute agent commands.
 - Exposes a `POST /insight/run` endpoint to execute `codex-insight` Docker jobs and return generated insight pages.
 - Exposes a `POST /graph/run` endpoint to proxy code graph generation (from selected files) to `codex.graph` (`POST /analyze`).
+- Supports in-memory request queueing with bounded pending requests and per-endpoint concurrency limits for `/agent/run`, `/insight/run`, and `/graph/run`.
 - Supports automatic `codex.graph` Docker startup from image on `POST /graph/run` and waits for `/health` readiness.
 - Exposes a `POST /sessions/{sessionId}/stop` endpoint to stop an active `/agent/run` session.
 - Exposes a `GET /models` endpoint to return model IDs from `AGENT_MODEL`.
@@ -66,6 +67,11 @@ The server reads supported agents from `AGENT_LIST` (comma-separated). In local 
 | `GRAPH_CONTAINER_NAME` | `codex-graph` | Optional container name used for auto-started `codex.graph` backend |
 | `GRAPH_HEALTH_CHECK_TIMEOUT_SECONDS` | `60` | Max wait time (seconds) for `codex.graph /health` to become ready after auto-start |
 | `GRAPH_RESPONSE_TIMEOUT_SECONDS` | *(unset)* | Optional timeout (seconds) for `POST /graph/run`; `<= 0`, empty, or invalid disables timeout |
+| `REQUEST_QUEUE_MAX_PENDING` | `100` | Max pending requests allowed per queued API before returning `503` |
+| `REQUEST_QUEUE_WAIT_TIMEOUT_SECONDS` | *(unset)* | Optional max wait time in queue before returning `503`; empty/invalid/`<= 0` disables queue wait timeout |
+| `AGENT_MAX_CONCURRENT_REQUESTS` | `4` | Max concurrently executing requests for `POST /agent/run` |
+| `INSIGHT_MAX_CONCURRENT_REQUESTS` | `2` | Max concurrently executing requests for `POST /insight/run` |
+| `GRAPH_MAX_CONCURRENT_REQUESTS` | `4` | Max concurrently executing requests for `POST /graph/run` |
 
 ### Docker Mode
 
@@ -292,6 +298,8 @@ If `RUN_RESPONSE_TIMEOUT_SECONDS` is configured and the timeout is reached befor
 {"type": "exit", "code": 124}
 ```
 
+If queueing is enabled and the request queue is saturated (pending limit reached) or queue wait timeout is exceeded, this endpoint returns `503`.
+
 ### `POST /insight/run`
 
 Runs `codex-insight` in Docker using the same invocation style documented in `codex.insight/README.md`.
@@ -377,6 +385,7 @@ When `CODEX_INSIGHT_IMAGE` is `craftslab/codex-insight:latest` (or `codex-insigh
 
 - `files` contains top-level generated Markdown files from `outputDir` when `exit_code` is `0`.
 - If timeout is configured via `INSIGHT_RESPONSE_TIMEOUT_SECONDS` and reached, endpoint returns `504`.
+- If queueing is enabled and the request queue is saturated (pending limit reached) or queue wait timeout is exceeded, endpoint returns `503`.
 
 ### `POST /graph/run`
 
@@ -444,4 +453,6 @@ Response body is normalized and returned as:
   "cost": null
 }
 ```
+
+If queueing is enabled and the request queue is saturated (pending limit reached) or queue wait timeout is exceeded, endpoint returns `503`.
 
