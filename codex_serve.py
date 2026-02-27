@@ -9,8 +9,10 @@ import urllib.request
 import urllib.error
 import urllib.parse
 import socket
+import ssl
+import math
 from pathlib import Path
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Any
 from uuid import uuid4
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
@@ -308,6 +310,240 @@ def _strip_model_args(args: List[str]) -> List[str]:
         normalized_args.append(arg)
         idx += 1
     return normalized_args
+
+
+def _replace_model_args(args: List[str], model: str) -> List[str]:
+    replaced_args: List[str] = []
+    idx = 0
+    replaced = False
+    while idx < len(args):
+        arg = args[idx]
+        if arg in ("--model", "-m"):
+            replaced_args.extend([arg, model])
+            replaced = True
+            idx += 2
+            continue
+        if arg.startswith("--model="):
+            replaced_args.append(f"--model={model}")
+            replaced = True
+            idx += 1
+            continue
+        replaced_args.append(arg)
+        idx += 1
+
+    if not replaced:
+        replaced_args.extend(["--model", model])
+    return replaced_args
+
+
+def _parse_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return float(text)
+        except ValueError:
+            return None
+    return None
+
+
+def _parse_bool(value: Optional[str], default: bool) -> bool:
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _get_model_aliases(model_id: str) -> List[str]:
+    normalized = (model_id or "").strip()
+    if not normalized:
+        return []
+    aliases = [normalized.lower()]
+    if "/" in normalized:
+        aliases.append(normalized.split("/", 1)[1].strip().lower())
+    return list(dict.fromkeys(alias for alias in aliases if alias))
+
+
+def _merge_model_metadata(entry: Dict[str, Any]) -> Dict[str, Any]:
+    merged: Dict[str, Any] = dict(entry)
+    for key in ("model_info", "litellm_params"):
+        section = entry.get(key)
+        if isinstance(section, dict):
+            merged.update(section)
+    return merged
+
+
+def _extract_litellm_model_metadata(payload: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    records = payload.get("data")
+    if not isinstance(records, list):
+        records = payload.get("models")
+    if not isinstance(records, list):
+        return {}
+
+    metadata_by_alias: Dict[str, Dict[str, Any]] = {}
+    for item in records:
+        if not isinstance(item, dict):
+            continue
+        model_id = (
+            item.get("model_name")
+            or item.get("id")
+            or item.get("model")
+            or item.get("name")
+            or ""
+        )
+        if not isinstance(model_id, str):
+            continue
+        aliases = _get_model_aliases(model_id)
+        if not aliases:
+            continue
+        metadata = _merge_model_metadata(item)
+        for alias in aliases:
+            metadata_by_alias[alias] = metadata
+
+    return metadata_by_alias
+
+
+def _score_model(metadata: Optional[Dict[str, Any]], preferred_order_index: int) -> tuple:
+    if not metadata:
+        return (0, float("-inf"), float("-inf"), -preferred_order_index)
+
+    performance_score = _parse_float(metadata.get("performance_score"))
+    quality_score = _parse_float(metadata.get("quality_score"))
+    latency_ms = (
+        _parse_float(metadata.get("latency_ms"))
+        or _parse_float(metadata.get("avg_latency_ms"))
+        or _parse_float(metadata.get("response_time_ms"))
+        or _parse_float(metadata.get("latency"))
+    )
+    if latency_ms is not None and latency_ms > 0 and latency_ms < 10:
+        latency_ms = latency_ms * 1000
+
+    rpm = (
+        _parse_float(metadata.get("rpm"))
+        or _parse_float(metadata.get("max_rpm"))
+        or _parse_float(metadata.get("rate_limit_rpm"))
+    )
+    tpm = (
+        _parse_float(metadata.get("tpm"))
+        or _parse_float(metadata.get("max_tpm"))
+        or _parse_float(metadata.get("rate_limit_tpm"))
+    )
+
+    performance_value = performance_score if performance_score is not None else 0.0
+    if quality_score is not None:
+        performance_value += quality_score
+    if latency_ms is not None and latency_ms > 0:
+        performance_value += 1000.0 / latency_ms
+
+    rate_limit_value = 0.0
+    if rpm is not None and rpm > 0:
+        rate_limit_value += math.log1p(rpm)
+    if tpm is not None and tpm > 0:
+        rate_limit_value += math.log1p(tpm)
+
+    has_metadata = 1 if (latency_ms is not None or rpm is not None or tpm is not None or performance_score is not None or quality_score is not None) else 0
+    return (has_metadata, performance_value, rate_limit_value, -preferred_order_index)
+
+
+def _build_ssl_context(verify_ssl: bool, ca_bundle: Optional[str]):
+    if verify_ssl:
+        if ca_bundle:
+            return ssl.create_default_context(cafile=ca_bundle)
+        return ssl.create_default_context()
+
+    unverified = ssl.create_default_context()
+    unverified.check_hostname = False
+    unverified.verify_mode = ssl.CERT_NONE
+    return unverified
+
+
+async def _fetch_litellm_model_metadata(base_url: str, api_key: str, verify_ssl: bool, ca_bundle: Optional[str]) -> Dict[str, Dict[str, Any]]:
+    normalized_base = (base_url or "").strip().rstrip("/")
+    if not normalized_base:
+        return {}
+
+    ssl_context = _build_ssl_context(verify_ssl, ca_bundle)
+    endpoints = ["/model/info", "/v1/model/info", "/models", "/v1/models"]
+    headers = {"Accept": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    def _do_fetch() -> Dict[str, Dict[str, Any]]:
+        for endpoint in endpoints:
+            url = f"{normalized_base}{endpoint}"
+            request = urllib.request.Request(url, headers=headers, method="GET")
+            try:
+                with urllib.request.urlopen(request, timeout=8.0, context=ssl_context) as response:
+                    status = getattr(response, "status", 200)
+                    if status < 200 or status >= 300:
+                        continue
+                    body = response.read().decode("utf-8", errors="replace")
+            except Exception:
+                continue
+
+            try:
+                payload = json.loads(body) if body.strip() else {}
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            metadata = _extract_litellm_model_metadata(payload)
+            if metadata:
+                return metadata
+        return {}
+
+    return await asyncio.to_thread(_do_fetch)
+
+
+async def _resolve_auto_model(args: List[str], req_env: Optional[Dict[str, str]]) -> Optional[str]:
+    requested_model = (_extract_model_from_args(args) or "").strip().lower()
+    if requested_model != "auto":
+        return None
+
+    candidate_models = [model for model in AGENT_MODEL if model.strip() and model.strip().lower() != "auto"]
+    if not candidate_models:
+        return None
+
+    merged_env: Dict[str, str] = {}
+    for key in ("LITELLM_BASE_URL", "LITELLM_API_KEY", "LITELLM_SSL_VERIFY", "LITELLM_CA_BUNDLE"):
+        value = os.environ.get(key)
+        if value is not None:
+            merged_env[key] = value
+    merged_env.update(req_env or {})
+
+    base_url = (merged_env.get("LITELLM_BASE_URL") or "").strip()
+    api_key = (merged_env.get("LITELLM_API_KEY") or "").strip()
+    verify_ssl = _parse_bool(merged_env.get("LITELLM_SSL_VERIFY"), False)
+    ca_bundle = (merged_env.get("LITELLM_CA_BUNDLE") or "").strip() or None
+
+    metadata_by_alias: Dict[str, Dict[str, Any]] = {}
+    if base_url:
+        metadata_by_alias = await _fetch_litellm_model_metadata(base_url, api_key, verify_ssl, ca_bundle)
+
+    best_model = candidate_models[0]
+    best_score = _score_model(None, preferred_order_index=0)
+
+    for index, model in enumerate(candidate_models):
+        model_metadata = None
+        for alias in _get_model_aliases(model):
+            if alias in metadata_by_alias:
+                model_metadata = metadata_by_alias[alias]
+                break
+        score = _score_model(model_metadata, preferred_order_index=index)
+        if score > best_score:
+            best_score = score
+            best_model = model
+
+    return best_model
 
 
 def _build_docker_env(agent: str, args: List[str], req_env: Optional[Dict[str, str]]) -> Dict[str, str]:
@@ -1066,6 +1302,9 @@ async def run_agent(req: RunRequest):
 
     popen_env = os.environ.copy()
     normalized_req_args = list(req.args)
+    auto_selected_model = await _resolve_auto_model(normalized_req_args, req.env)
+    if auto_selected_model:
+        normalized_req_args = _replace_model_args(normalized_req_args, auto_selected_model)
 
     if DOCKER_IMAGE:
         # Run inside Docker

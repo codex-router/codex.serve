@@ -87,7 +87,7 @@ curl -N -sS -X POST "${BASE_URL}/agent/run" \
   --data-binary @- <<EOF
 {
   "agent": "codex",
-  "args": ["--model", "ollama-kimi-k2.5"],
+  "args": ["--model", "auto"],
   "stdin": "Summarize attached files in one sentence.",
   "sessionId": "${SESSION_ID}",
   "contextFiles": [

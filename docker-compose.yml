@@ -18,7 +18,7 @@ services:
       # Supported agent providers (comma-separated)
       - AGENT_LIST=codex,kimi,opencode,qwen
       # Supported model IDs (comma-separated)
-      - AGENT_MODEL=ollama-kimi-k2.5,ollama-minimax-m2.5,ollama-qwen3-coder
+      - AGENT_MODEL=auto,ollama-kimi-k2.5,ollama-minimax-m2.5,ollama-qwen3-coder
       - INSIGHT_MODEL=ollama-gemini-3-flash-preview
       - GRAPH_MODEL=ollama-gemini-3-flash-preview
       # codex.graph backend endpoint for /graph/run proxy

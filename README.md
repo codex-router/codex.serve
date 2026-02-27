@@ -49,7 +49,7 @@ The server reads supported agents from `AGENT_LIST` (comma-separated). In local 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AGENT_LIST` | `codex` | Supported agent names (comma-separated) |
-| `AGENT_MODEL` | *(empty)* | Returned model IDs for `GET /models` (comma-separated) |
+| `AGENT_MODEL` | *(empty)* | Returned model IDs for `GET /models` (comma-separated). Include `auto` to enable server-side auto selection for `POST /agent/run` when request args contain `--model auto`. |
 | `LITELLM_BASE_URL` | *(unset)* | Default LiteLLM base URL passed to execution container in Docker mode |
 | `LITELLM_API_KEY` | *(unset)* | Default LiteLLM API key passed to execution container in Docker mode |
 | `LITELLM_SSL_VERIFY` | `false` | Default TLS verification behavior for LiteLLM calls (`false` supports self-signed certificates) |
@@ -82,8 +82,9 @@ When enabled:
 3. `AGENT_PROVIDER_NAME` is automatically set from the requested `agent`.
 4. Request `env` values are optional and can override inherited defaults.
 5. `LITELLM_MODEL` is inferred from `--model`/`-m` args when not explicitly provided.
-6. The `agent` value is used as the executable name inside the execution container.
-7. If `codex.serve` itself runs in Docker, mount `/var/run/docker.sock` so it can start sibling containers.
+6. When request args use `--model auto`, `codex.serve` selects the best model from `AGENT_MODEL` (excluding `auto`) using LiteLLM model metadata (performance and rate-limit signals) fetched from `LITELLM_BASE_URL` with `LITELLM_API_KEY`.
+7. The `agent` value is used as the executable name inside the execution container.
+8. If `codex.serve` itself runs in Docker, mount `/var/run/docker.sock` so it can start sibling containers.
 
 ## Usage
 
@@ -236,6 +237,8 @@ Executes a agent command.
 ```
 
 `env` is optional. In Docker mode, `LITELLM_BASE_URL` and `LITELLM_API_KEY` are read from `codex.serve` process env by default.
+
+If `args` contains `--model auto` (or `-m auto`) and `AGENT_MODEL` includes `auto`, the server resolves `auto` to a concrete model from `AGENT_MODEL` (excluding `auto`) before execution.
 
 `contextFiles` is optional:
 - Each item must include `path` and at least one of `content` or `base64Content`.

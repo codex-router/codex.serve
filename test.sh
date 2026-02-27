@@ -90,6 +90,7 @@ docker run -d \
 	-p "${SERVE_PORT}:8000" \
 	-v /var/run/docker.sock:/var/run/docker.sock \
 	-e AGENT_LIST="codex,bash" \
+	-e AGENT_MODEL="auto,test-model-fast,test-model-fallback" \
 	-e CODEX_AGENT_IMAGE="${AGENT_IMAGE_TAG}" \
 	-e CODEX_INSIGHT_IMAGE="${INSIGHT_IMAGE_TAG}" \
 	-e GRAPH_CONTAINER_NAME="${GRAPH_CONTAINER_NAME}" \
@@ -183,11 +184,12 @@ count = data.get("count")
 if not isinstance(models, list):
 	raise SystemExit("/models response missing list field 'models'")
 
-if models != []:
-	raise SystemExit(f"/models response mismatch: got {models}, expected []")
+expected_models = ["auto", "test-model-fast", "test-model-fallback"]
+if models != expected_models:
+	raise SystemExit(f"/models response mismatch: got {models}, expected {expected_models}")
 
-if count != 0:
-	raise SystemExit(f"/models count mismatch: got {count}, expected 0")
+if count != len(expected_models):
+	raise SystemExit(f"/models count mismatch: got {count}, expected {len(expected_models)}")
 PY
 
 echo "- Testing POST /agent/run"
@@ -231,6 +233,53 @@ if not exit_events:
 exit_code = exit_events[-1].get("code")
 if not isinstance(exit_code, int):
 	raise SystemExit(f"/agent/run exit code is not an integer: {exit_code}")
+PY
+
+echo "- Testing POST /agent/run with --model auto resolution"
+AUTO_MODEL_RUN_BODY="${TMP_DIR}/auto-model-run.ndjson"
+AUTO_MODEL_RUN_PAYLOAD="${TMP_DIR}/auto-model-run.json"
+
+cat > "${AUTO_MODEL_RUN_PAYLOAD}" <<'JSON'
+{
+  "agent": "bash",
+  "args": ["-lc", "printf '%s' \"$LITELLM_MODEL\"", "--model", "auto"],
+  "stdin": "",
+  "sessionId": "auto-model-run-session"
+}
+JSON
+
+curl -sS -N -o "${AUTO_MODEL_RUN_BODY}" \
+	-X POST "http://127.0.0.1:${SERVE_PORT}/agent/run" \
+	-H "Content-Type: application/json" \
+	--data-binary "@${AUTO_MODEL_RUN_PAYLOAD}"
+
+python3 - "${AUTO_MODEL_RUN_BODY}" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+events = []
+
+with open(path, "r", encoding="utf-8") as f:
+	for line in f:
+		line = line.strip()
+		if not line:
+			continue
+		events.append(json.loads(line))
+
+if not events:
+	raise SystemExit("/agent/run auto-model test returned no NDJSON events")
+
+stdout_text = "".join(e.get("data", "") for e in events if e.get("type") == "stdout")
+if "test-model-fast" not in stdout_text:
+	raise SystemExit(f"/agent/run auto-model expected selected model 'test-model-fast', got stdout={stdout_text!r}")
+
+exit_events = [e for e in events if e.get("type") == "exit"]
+if not exit_events:
+	raise SystemExit("/agent/run auto-model test missing exit event")
+
+if exit_events[-1].get("code") != 0:
+	raise SystemExit(f"/agent/run auto-model test expected exit 0, got {exit_events[-1].get('code')}")
 PY
 
 echo "- Testing POST /agent/run with contextFiles injection"
