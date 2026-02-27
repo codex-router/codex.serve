@@ -15,6 +15,7 @@ GRAPH_STARTUP_WAIT_SECONDS="${GRAPH_STARTUP_WAIT_SECONDS:-240}"
 GRAPH_HEALTH_URL="${GRAPH_HEALTH_URL:-http://localhost:52104/health}"
 QUEUE_MAX_RETRIES="${QUEUE_MAX_RETRIES:-3}"
 QUEUE_RETRY_DELAY_SECONDS="${QUEUE_RETRY_DELAY_SECONDS:-3}"
+DEMO_CONTEXT_OVERFLOW="${DEMO_CONTEXT_OVERFLOW:-false}"
 RUN_DATE="$(date +%Y%m%d-%H%M%S)"
 OUT_PATH="${OUT_PATH:-/tmp/codex-serve-example-out-${RUN_DATE}}"
 
@@ -83,6 +84,7 @@ mkdir -p "${OUT_PATH}"
 
 echo "Testing POST ${BASE_URL}/agent/run with sessionId=${SESSION_ID}"
 echo "Expect NDJSON stream with: session/stdout|stderr/exit"
+echo "demoContextOverflow=${DEMO_CONTEXT_OVERFLOW}"
 
 curl -N -sS -X POST "${BASE_URL}/agent/run" \
   -H "Content-Type: application/json" \
@@ -104,6 +106,49 @@ curl -N -sS -X POST "${BASE_URL}/agent/run" \
   ]
 }
 EOF
+
+if [[ "${DEMO_CONTEXT_OVERFLOW}" =~ ^(1|true|yes|on)$ ]]; then
+  echo
+  echo "Testing optional /agent/run context-overflow auto-compress demo"
+
+  OVERFLOW_PAYLOAD="/tmp/codex-serve-overflow-payload-${RUN_DATE}.json"
+  OVERFLOW_RESPONSE="/tmp/codex-serve-overflow-response-${RUN_DATE}.ndjson"
+
+  python3 - "${OVERFLOW_PAYLOAD}" "${RUN_DATE}" <<'PY'
+import json
+import sys
+
+payload_path = sys.argv[1]
+run_date = sys.argv[2]
+long_prompt = "HISTORY-BLOCK-" * 120
+
+payload = {
+  "agent": "bash",
+  "args": [
+    "-lc",
+    "INPUT=\"$(cat)\"; "
+    "if printf '%s' \"$INPUT\" | grep -q 'message history compressed automatically by codex.serve'; then "
+    "printf 'compressed-retry-ok'; "
+    "else "
+    "printf 'maximum context length exceeded\n' >&2; exit 1; "
+    "fi"
+  ],
+  "stdin": long_prompt,
+  "sessionId": f"demo-overflow-{run_date}"
+}
+
+with open(payload_path, "w", encoding="utf-8") as f:
+  json.dump(payload, f)
+PY
+
+  curl -N -sS -X POST "${BASE_URL}/agent/run" \
+    -H "Content-Type: application/json" \
+    --data-binary "@${OVERFLOW_PAYLOAD}" \
+    -o "${OVERFLOW_RESPONSE}"
+
+  cat "${OVERFLOW_RESPONSE}"
+  rm -f "${OVERFLOW_PAYLOAD}" "${OVERFLOW_RESPONSE}"
+fi
 
 echo
 echo "Testing POST ${BASE_URL}/insight/run"

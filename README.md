@@ -15,6 +15,7 @@ HTTP server implementation for the Codex Gerrit plugin. This service exposes a R
 - Supports streaming output via newline-delimited JSON (NDJSON).
 - Supports a configurable agent allowlist via `AGENT_LIST`.
 - Handles environment variable propagation (e.g., LiteLLM config).
+- Supports automatic message-history compression and one-time retry when `/agent/run` fails due to model context overflow.
 - Supports optional `contextFiles` in `POST /agent/run` to prepend referenced file contents into agent stdin context.
 - Each `contextFiles` item is a typed `ContextFileItem` object supporting `content` (plain text) or `base64Content` (base64-encoded bytes) for flexible file attachment, including binary and non-UTF-8 files.
 
@@ -72,6 +73,9 @@ The server reads supported agents from `AGENT_LIST` (comma-separated). In local 
 | `AGENT_MAX_CONCURRENT_REQUESTS` | `4` | Max concurrently executing requests for `POST /agent/run` |
 | `INSIGHT_MAX_CONCURRENT_REQUESTS` | `2` | Max concurrently executing requests for `POST /insight/run` |
 | `GRAPH_MAX_CONCURRENT_REQUESTS` | `4` | Max concurrently executing requests for `POST /graph/run` |
+| `AUTO_COMPRESS_ON_CONTEXT_OVERFLOW` | `true` | Automatically compresses oversized `/agent/run` stdin/history and retries once when stderr indicates model context overflow |
+| `AUTO_COMPRESS_MAX_CHARS` | `24000` | Target max character budget for compressed `/agent/run` stdin payload |
+| `AUTO_COMPRESS_KEEP_HEAD_CHARS` | `6000` | Head segment character budget preserved before tail content during automatic compression |
 
 ### Docker Mode
 
@@ -299,6 +303,8 @@ If `RUN_RESPONSE_TIMEOUT_SECONDS` is configured and the timeout is reached befor
 ```
 
 If queueing is enabled and the request queue is saturated (pending limit reached) or queue wait timeout is exceeded, this endpoint returns `503`.
+
+If `AUTO_COMPRESS_ON_CONTEXT_OVERFLOW=true` and the initial run fails with a model context-overflow style error (for example max context length / token limit exceeded), `codex.serve` automatically compresses the stdin message history and retries once. The stream includes a stderr notice before retrying.
 
 ### `POST /insight/run`
 

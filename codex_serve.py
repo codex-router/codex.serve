@@ -201,6 +201,19 @@ GRAPH_MAX_CONCURRENT_REQUESTS = _parse_non_negative_int(
     4,
 )
 
+AUTO_COMPRESS_ON_CONTEXT_OVERFLOW = (
+    (os.environ.get("AUTO_COMPRESS_ON_CONTEXT_OVERFLOW") or "true").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+AUTO_COMPRESS_MAX_CHARS = max(
+    2_000,
+    _parse_non_negative_int(os.environ.get("AUTO_COMPRESS_MAX_CHARS"), 24_000),
+)
+AUTO_COMPRESS_KEEP_HEAD_CHARS = max(
+    0,
+    _parse_non_negative_int(os.environ.get("AUTO_COMPRESS_KEEP_HEAD_CHARS"), 6_000),
+)
+
 
 def _build_graph_base_url_candidates(base_url: str) -> List[str]:
     candidates: List[str] = []
@@ -234,6 +247,18 @@ MAX_CONTEXT_FILES = 20
 MAX_CONTEXT_FILE_CHARS = 12_000
 MAX_INSIGHT_FILES = 200
 MAX_INSIGHT_FILE_CHARS = 200_000
+
+CONTEXT_OVERFLOW_ERROR_PATTERNS = (
+    "maximum context length",
+    "context length exceeded",
+    "context window",
+    "too many tokens",
+    "token limit exceeded",
+    "prompt is too long",
+    "input is too long",
+    "request too large",
+    "context overflow",
+)
 
 
 class _QueueLease:
@@ -392,6 +417,41 @@ def _build_stdin_with_context(stdin: str, context_files: Optional[List[ContextFi
         return prompt_text
 
     return "\n".join(lines).strip() + "\n"
+
+
+def _is_context_overflow_error(text: str) -> bool:
+    normalized = (text or "").strip().lower()
+    if not normalized:
+        return False
+    return any(pattern in normalized for pattern in CONTEXT_OVERFLOW_ERROR_PATTERNS)
+
+
+def _compress_stdin_payload(payload: str, max_chars: int, keep_head_chars: int) -> str:
+    source = payload or ""
+    if len(source) <= max_chars:
+        return source
+
+    marker = (
+        "\n\n[message history compressed automatically by codex.serve "
+        "because model context length was exceeded]\n\n"
+    )
+    budget = max(0, max_chars - len(marker))
+    if budget <= 0:
+        return source[:max_chars]
+
+    head_budget = min(max(0, keep_head_chars), budget)
+    tail_budget = max(0, budget - head_budget)
+
+    if tail_budget == 0:
+        compressed = source[:budget]
+    else:
+        head = source[:head_budget].rstrip()
+        tail = source[-tail_budget:].lstrip()
+        compressed = f"{head}{marker}{tail}"
+
+    if len(compressed) > max_chars:
+        compressed = compressed[:max_chars]
+    return compressed
 
 
 def _extract_model_from_args(args: List[str]) -> Optional[str]:
@@ -1454,110 +1514,153 @@ async def run_agent(req: RunRequest):
     queue_lease = await AGENT_REQUEST_QUEUE.acquire()
 
     async def stream_generator():
-        read_tasks = []
-        process = None
+        stdin_payload_current = stdin_payload
+        compression_retried = False
+        yield json.dumps({"type": "session", "id": sessionId}) + "\n"
+
         try:
-            yield json.dumps({"type": "session", "id": sessionId}) + "\n"
-
-            process = await asyncio.create_subprocess_exec(
-                *command,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=popen_env
-            )
-            await _register_session(sessionId, process)
-
-            # Write stdin
-            if stdin_payload:
-                process.stdin.write(stdin_payload.encode())
-                await process.stdin.drain()
-            process.stdin.close()
-
-            # Queue to aggregate chunks from both stdout and stderr
-            queue = asyncio.Queue()
-
-            async def read_stream(stream, type_label):
-                decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
-                buffer = ""
+            while True:
+                read_tasks = []
+                process = None
+                stderr_events: List[str] = []
                 try:
-                    while True:
-                        chunk = await stream.read(4096)
-                        if not chunk:
-                            break
-
-                        buffer += decoder.decode(chunk)
-
-                        while True:
-                            newline_index = buffer.find("\n")
-                            if newline_index == -1:
-                                break
-                            line = buffer[: newline_index + 1]
-                            buffer = buffer[newline_index + 1 :]
-                            await queue.put({"type": type_label, "data": line})
-
-                    buffer += decoder.decode(b"", final=True)
-                    if buffer:
-                        await queue.put({"type": type_label, "data": buffer})
-                except Exception as stream_error:
-                    await queue.put(
-                        {
-                            "type": "stderr",
-                            "data": f"{type_label} stream read failed: {str(stream_error)}\n",
-                        }
+                    process = await asyncio.create_subprocess_exec(
+                        *command,
+                        stdin=asyncio.subprocess.PIPE,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                        env=popen_env
                     )
+                    await _register_session(sessionId, process)
+
+                    if stdin_payload_current:
+                        process.stdin.write(stdin_payload_current.encode())
+                        await process.stdin.drain()
+                    process.stdin.close()
+
+                    queue = asyncio.Queue()
+
+                    async def read_stream(stream, type_label):
+                        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+                        buffer = ""
+                        try:
+                            while True:
+                                chunk = await stream.read(4096)
+                                if not chunk:
+                                    break
+
+                                buffer += decoder.decode(chunk)
+
+                                while True:
+                                    newline_index = buffer.find("\n")
+                                    if newline_index == -1:
+                                        break
+                                    line = buffer[: newline_index + 1]
+                                    buffer = buffer[newline_index + 1 :]
+                                    await queue.put({"type": type_label, "data": line})
+
+                            buffer += decoder.decode(b"", final=True)
+                            if buffer:
+                                await queue.put({"type": type_label, "data": buffer})
+                        except Exception as stream_error:
+                            await queue.put(
+                                {
+                                    "type": "stderr",
+                                    "data": f"{type_label} stream read failed: {str(stream_error)}\n",
+                                }
+                            )
+                        finally:
+                            await queue.put(None)
+
+                    read_tasks = [
+                        asyncio.create_task(read_stream(process.stdout, "stdout")),
+                        asyncio.create_task(read_stream(process.stderr, "stderr")),
+                    ]
+
+                    deadline = None
+                    if RESPONSE_TIMEOUT_SECONDS is not None:
+                        deadline = asyncio.get_running_loop().time() + RESPONSE_TIMEOUT_SECONDS
+
+                    active_streams = 2
+                    while active_streams > 0:
+                        item = await _await_with_deadline(queue.get(), deadline)
+                        if item is None:
+                            active_streams -= 1
+                            continue
+
+                        if item.get("type") == "stderr":
+                            data = item.get("data")
+                            if isinstance(data, str) and data:
+                                stderr_events.append(data)
+                                if len(stderr_events) > 40:
+                                    stderr_events = stderr_events[-40:]
+
+                        yield json.dumps(item) + "\n"
+
+                    exit_code = await _await_with_deadline(process.wait(), deadline)
+                    stopped_by_api = await _consume_stop_requested(sessionId)
+                    if stopped_by_api:
+                        yield json.dumps({"type": "stderr", "data": "Session stopped via API.\n"}) + "\n"
+                        yield json.dumps({"type": "exit", "code": 0}) + "\n"
+                        break
+
+                    stderr_summary = "".join(stderr_events)
+                    should_retry_with_compression = (
+                        AUTO_COMPRESS_ON_CONTEXT_OVERFLOW
+                        and not compression_retried
+                        and exit_code != 0
+                        and _is_context_overflow_error(stderr_summary)
+                    )
+
+                    if should_retry_with_compression:
+                        compressed_payload = _compress_stdin_payload(
+                            stdin_payload_current,
+                            AUTO_COMPRESS_MAX_CHARS,
+                            AUTO_COMPRESS_KEEP_HEAD_CHARS,
+                        )
+                        if compressed_payload != stdin_payload_current:
+                            compression_retried = True
+                            stdin_payload_current = compressed_payload
+                            yield json.dumps(
+                                {
+                                    "type": "stderr",
+                                    "data": (
+                                        "Detected model context overflow. "
+                                        "Retrying once with compressed message history.\n"
+                                    ),
+                                }
+                            ) + "\n"
+                            continue
+
+                    yield json.dumps({"type": "exit", "code": exit_code}) + "\n"
+                    break
+
+                except asyncio.TimeoutError:
+                    if process is not None:
+                        await _terminate_process(process)
+                    timeout_msg = (
+                        "Request timed out while waiting for agent response "
+                        f"({RESPONSE_TIMEOUT_SECONDS}s)."
+                    )
+                    yield json.dumps({"type": "stderr", "data": timeout_msg}) + "\n"
+                    yield json.dumps({"type": "exit", "code": 124}) + "\n"
+                    break
+
+                except Exception as e:
+                    error_data = {"type": "stderr", "data": f"Internal Server Error: {str(e)}"}
+                    yield json.dumps(error_data) + "\n"
+                    yield json.dumps({"type": "exit", "code": 1}) + "\n"
+                    break
+
                 finally:
-                    # Always signal completion so active_streams cannot hang forever.
-                    await queue.put(None)
-
-            # Start reading tasks
-            read_tasks = [
-                asyncio.create_task(read_stream(process.stdout, "stdout")),
-                asyncio.create_task(read_stream(process.stderr, "stderr")),
-            ]
-
-            deadline = None
-            if RESPONSE_TIMEOUT_SECONDS is not None:
-                deadline = asyncio.get_running_loop().time() + RESPONSE_TIMEOUT_SECONDS
-
-            active_streams = 2
-            while active_streams > 0:
-                item = await _await_with_deadline(queue.get(), deadline)
-                if item is None:
-                    active_streams -= 1
-                else:
-                    yield json.dumps(item) + "\n"
-
-            exit_code = await _await_with_deadline(process.wait(), deadline)
-            stopped_by_api = await _consume_stop_requested(sessionId)
-            if stopped_by_api:
-                yield json.dumps({"type": "stderr", "data": "Session stopped via API.\n"}) + "\n"
-                yield json.dumps({"type": "exit", "code": 0}) + "\n"
-            else:
-                yield json.dumps({"type": "exit", "code": exit_code}) + "\n"
-
-        except asyncio.TimeoutError:
-            if process is not None:
-                await _terminate_process(process)
-            timeout_msg = (
-                "Request timed out while waiting for agent response "
-                f"({RESPONSE_TIMEOUT_SECONDS}s)."
-            )
-            yield json.dumps({"type": "stderr", "data": timeout_msg}) + "\n"
-            yield json.dumps({"type": "exit", "code": 124}) + "\n"
-
-        except Exception as e:
-            error_data = {"type": "stderr", "data": f"Internal Server Error: {str(e)}"}
-            yield json.dumps(error_data) + "\n"
-            yield json.dumps({"type": "exit", "code": 1}) + "\n"
+                    for task in read_tasks:
+                        if not task.done():
+                            task.cancel()
+                    if read_tasks:
+                        await asyncio.gather(*read_tasks, return_exceptions=True)
+                    await _unregister_session(sessionId, process)
 
         finally:
-            for task in read_tasks:
-                if not task.done():
-                    task.cancel()
-            if read_tasks:
-                await asyncio.gather(*read_tasks, return_exceptions=True)
-            await _unregister_session(sessionId, process)
             queue_lease.release()
 
     return StreamingResponse(stream_generator(), media_type="application/x-ndjson")

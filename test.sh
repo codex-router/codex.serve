@@ -105,6 +105,9 @@ docker run -d \
 	-e AGENT_MAX_CONCURRENT_REQUESTS="4" \
 	-e INSIGHT_MAX_CONCURRENT_REQUESTS="2" \
 	-e GRAPH_MAX_CONCURRENT_REQUESTS="4" \
+	-e AUTO_COMPRESS_ON_CONTEXT_OVERFLOW="true" \
+	-e AUTO_COMPRESS_MAX_CHARS="220" \
+	-e AUTO_COMPRESS_KEEP_HEAD_CHARS="60" \
 	-e LITELLM_BASE_URL="http://litellm.test.local" \
 	-e LITELLM_API_KEY="test-api-key" \
 	-e LITELLM_SSL_VERIFY="false" \
@@ -408,6 +411,74 @@ if not exit_events:
 
 if exit_events[-1].get("code") != 0:
 	raise SystemExit(f"/agent/run base64 context test expected exit 0, got {exit_events[-1].get('code')}")
+PY
+
+echo "- Testing POST /agent/run auto-compress retry on context overflow"
+COMPRESS_RUN_BODY="${TMP_DIR}/compress-run.ndjson"
+COMPRESS_RUN_PAYLOAD="${TMP_DIR}/compress-run.json"
+
+python3 - "${COMPRESS_RUN_PAYLOAD}" <<'PY'
+import json
+import sys
+
+payload_path = sys.argv[1]
+long_prompt = "HISTORY-BLOCK-" * 120
+
+payload = {
+	"agent": "bash",
+	"args": [
+		"-lc",
+		"INPUT=\"$(cat)\"; "
+		"if printf '%s' \"$INPUT\" | grep -q 'message history compressed automatically by codex.serve'; then "
+		"printf 'compressed-retry-ok'; "
+		"else "
+		"printf 'maximum context length exceeded\n' >&2; exit 1; "
+		"fi"
+	],
+	"stdin": long_prompt,
+	"sessionId": "compress-retry-session"
+}
+
+with open(payload_path, "w", encoding="utf-8") as f:
+	json.dump(payload, f)
+PY
+
+curl -sS -N -o "${COMPRESS_RUN_BODY}" \
+	-X POST "http://127.0.0.1:${SERVE_PORT}/agent/run" \
+	-H "Content-Type: application/json" \
+	--data-binary "@${COMPRESS_RUN_PAYLOAD}"
+
+python3 - "${COMPRESS_RUN_BODY}" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+events = []
+
+with open(path, "r", encoding="utf-8") as f:
+	for line in f:
+		line = line.strip()
+		if not line:
+			continue
+		events.append(json.loads(line))
+
+if not events:
+	raise SystemExit("/agent/run compress retry test returned no NDJSON events")
+
+stderr_text = "".join(e.get("data", "") for e in events if e.get("type") == "stderr")
+if "Retrying once with compressed message history" not in stderr_text:
+	raise SystemExit(f"/agent/run compress retry missing retry notice, stderr={stderr_text!r}")
+
+stdout_text = "".join(e.get("data", "") for e in events if e.get("type") == "stdout")
+if "compressed-retry-ok" not in stdout_text:
+	raise SystemExit(f"/agent/run compress retry expected success output, got stdout={stdout_text!r}")
+
+exit_events = [e for e in events if e.get("type") == "exit"]
+if not exit_events:
+	raise SystemExit("/agent/run compress retry test missing exit event")
+
+if exit_events[-1].get("code") != 0:
+	raise SystemExit(f"/agent/run compress retry expected exit 0, got {exit_events[-1].get('code')}")
 PY
 
 echo "- Testing POST /sessions/{sessionId}/stop"
