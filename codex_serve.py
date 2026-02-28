@@ -1409,9 +1409,11 @@ async def run_graph(req: GraphRunRequest):
         if not file_paths:
             raise HTTPException(status_code=400, detail="file_paths is required")
 
-        # Write code to a temp file for mounting
+        # Write code to a temp file for mounting (ensure file, not directory)
         with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt") as code_file:
             code_file.write(code)
+            code_file.flush()
+            os.fsync(code_file.fileno())
             code_file_path = code_file.name
 
         framework_hint = (req.framework_hint or "").strip() or (_infer_framework_hint(file_paths) or "")
@@ -1444,6 +1446,7 @@ async def run_graph(req: GraphRunRequest):
         max_attempts = GRAPH_ANALYZE_MAX_RETRIES + 1
         for attempt in range(1, max_attempts + 1):
             try:
+                # Ensure the mount target is a file, not a directory
                 graph_command = ["docker", "run", "--rm", "-v", f"{code_file_path}:/tmp/code.txt:ro"]
                 for env_key, env_val in graph_env.items():
                     graph_command.extend(["-e", f"{env_key}={env_val}"])

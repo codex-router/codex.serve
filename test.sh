@@ -626,10 +626,6 @@ GRAPH_INVALID_BODY="${TMP_DIR}/graph-invalid.json"
 GRAPH_FILE_PATHS_INVALID_BODY="${TMP_DIR}/graph-file-paths-invalid.json"
 GRAPH_PROXY_BODY="${TMP_DIR}/graph-proxy.json"
 
-# As of 2026-02, /graph/run executes codex-graph-cli with CLI args:
-#   analyze --code-file /tmp/code.txt --file-path <file> --framework-hint <hint> --pretty
-# The code is written to a temp file and mounted. No --request-json or stdin is used.
-
 GRAPH_INVALID_STATUS="$(curl -sS -o "${GRAPH_INVALID_BODY}" -w "%{http_code}" \
 	-X POST "http://127.0.0.1:${SERVE_PORT}/graph/run" \
 	-H "Content-Type: application/json" \
