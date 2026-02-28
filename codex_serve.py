@@ -1447,13 +1447,15 @@ async def run_graph(req: GraphRunRequest):
         for attempt in range(1, max_attempts + 1):
             try:
                 # Ensure the mount target is a file, not a directory
-                graph_command = ["docker", "run", "--rm", "-v", f"{code_file_path}:/tmp/code.txt:ro"]
+                # Workaround: mount to a unique filename and use that in CLI args
+                container_code_path = f"/tmp/code-{os.path.basename(code_file_path)}"
+                graph_command = ["docker", "run", "--rm", "-v", f"{code_file_path}:{container_code_path}:ro"]
                 for env_key, env_val in graph_env.items():
                     graph_command.extend(["-e", f"{env_key}={env_val}"])
                 graph_command.append(CODEX_GRAPH_IMAGE)
                 graph_command.extend([
                     "analyze",
-                    "--code-file", "/tmp/code.txt",
+                    "--code-file", container_code_path,
                     "--file-path", file_path,
                     "--framework-hint", framework_hint,
                     "--pretty",
