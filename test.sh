@@ -93,10 +93,9 @@ docker run -d \
 	-e AGENT_MODEL="auto,test-model-fast,test-model-fallback" \
 	-e CODEX_AGENT_IMAGE="${AGENT_IMAGE_TAG}" \
 	-e CODEX_INSIGHT_IMAGE="${INSIGHT_IMAGE_TAG}" \
+	-e CODEX_GRAPH_IMAGE="codex-graph:test-missing" \
 	-e GRAPH_CONTAINER_NAME="${GRAPH_CONTAINER_NAME}" \
-	-e GRAPH_BASE_URL="http://127.0.0.1:59999" \
 	-e GRAPH_AUTO_START="true" \
-	-e GRAPH_HEALTH_CHECK_TIMEOUT_SECONDS="5" \
 	-e RUN_RESPONSE_TIMEOUT_SECONDS="60" \
 	-e INSIGHT_RESPONSE_TIMEOUT_SECONDS="300" \
 	-e GRAPH_RESPONSE_TIMEOUT_SECONDS="30" \
@@ -654,6 +653,7 @@ expected_fragments = [
 	"Failed to start codex.graph backend",
 	"Error response from daemon",
 	"pull access denied",
+	"manifest unknown",
 	"No such image",
 ]
 
@@ -688,6 +688,7 @@ expected_fragments = [
 	"Failed to start codex.graph backend",
 	"Error response from daemon",
 	"pull access denied",
+	"manifest unknown",
 	"No such image",
 ]
 
@@ -701,7 +702,7 @@ GRAPH_PROXY_STATUS="$(curl -sS -o "${GRAPH_PROXY_BODY}" -w "%{http_code}" \
 	-d '{"code":"def run():\n    return 1","file_paths":["app.py"],"env":{"GRAPH_MODEL":"graph-test-model","LITELLM_SSL_VERIFY":"false","LITELLM_CA_BUNDLE":""}}')"
 
 if [ "${GRAPH_PROXY_STATUS}" != "502" ] && [ "${GRAPH_PROXY_STATUS}" != "504" ]; then
-	echo "Expected HTTP 502/504 from /graph/run when GRAPH_BASE_URL is unreachable, got ${GRAPH_PROXY_STATUS}"
+	echo "Expected HTTP 502/504 from /graph/run when codex.graph startup/upstream is unavailable, got ${GRAPH_PROXY_STATUS}"
 	cat "${GRAPH_PROXY_BODY}"
 	exit 1
 fi
@@ -722,6 +723,7 @@ expected_fragments = [
 	"Failed to start codex.graph backend",
 	"Error response from daemon",
 	"pull access denied",
+	"manifest unknown",
 	"No such image",
 	"Failed to call codex.graph",
 ]

@@ -13,6 +13,7 @@ GRAPH_MAX_RETRIES="${GRAPH_MAX_RETRIES:-3}"
 GRAPH_RETRY_DELAY_SECONDS="${GRAPH_RETRY_DELAY_SECONDS:-10}"
 GRAPH_STARTUP_WAIT_SECONDS="${GRAPH_STARTUP_WAIT_SECONDS:-240}"
 GRAPH_HEALTH_URL="${GRAPH_HEALTH_URL:-http://localhost:52104/health}"
+GRAPH_CONTAINER_NAME="${GRAPH_CONTAINER_NAME:-codex-graph}"
 QUEUE_MAX_RETRIES="${QUEUE_MAX_RETRIES:-3}"
 QUEUE_RETRY_DELAY_SECONDS="${QUEUE_RETRY_DELAY_SECONDS:-3}"
 DEMO_CONTEXT_OVERFLOW="${DEMO_CONTEXT_OVERFLOW:-false}"
@@ -254,6 +255,7 @@ echo "graphMaxRetries=${GRAPH_MAX_RETRIES}"
 echo "graphRetryDelaySeconds=${GRAPH_RETRY_DELAY_SECONDS}"
 echo "graphStartupWaitSeconds=${GRAPH_STARTUP_WAIT_SECONDS}"
 echo "graphHealthUrl=${GRAPH_HEALTH_URL}"
+echo "graphContainerName=${GRAPH_CONTAINER_NAME}"
 echo "queueMaxRetries=${QUEUE_MAX_RETRIES}"
 echo "queueRetryDelaySeconds=${QUEUE_RETRY_DELAY_SECONDS}"
 echo "payloadFile=${GRAPH_PAYLOAD}"
@@ -324,8 +326,8 @@ while true; do
   cat "${GRAPH_RESPONSE}"
   if command -v docker >/dev/null 2>&1; then
     echo
-    echo "Last 80 lines from docker logs codex-graph (if container exists):"
-    docker logs --tail 80 codex-graph 2>/dev/null || true
+    echo "Last 80 lines from docker logs ${GRAPH_CONTAINER_NAME} (if container exists):"
+    docker logs --tail 80 "${GRAPH_CONTAINER_NAME}" 2>/dev/null || true
   fi
   exit 1
 done

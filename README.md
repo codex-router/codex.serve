@@ -61,12 +61,10 @@ The server reads supported agents from `AGENT_LIST` (comma-separated). In local 
 | `RUN_RESPONSE_TIMEOUT_SECONDS` | *(unset)* | Optional timeout (seconds) for `POST /agent/run`; `<= 0`, empty, or invalid disables timeout |
 | `CODEX_INSIGHT_IMAGE` | `craftslab/codex-insight:latest` | Docker image used by `POST /insight/run` |
 | `INSIGHT_RESPONSE_TIMEOUT_SECONDS` | *(unset)* | Optional timeout (seconds) for `POST /insight/run`; `<= 0`, empty, or invalid disables timeout |
-| `GRAPH_BASE_URL` | `http://localhost:52104` | Base URL for `codex.graph` backend used by `POST /graph/run` (proxied to `${GRAPH_BASE_URL}/analyze`) |
 | `GRAPH_MODEL` | *(unset)* | Default graph model for `POST /graph/run` (mapped to forwarded payload env `LITELLM_MODEL`; falls back to `LITELLM_MODEL` when unset) |
 | `CODEX_GRAPH_IMAGE` | `craftslab/codex-graph:latest` | Docker image used to auto-start `codex.graph` backend when needed |
 | `GRAPH_AUTO_START` | `true` | Automatically starts `codex.graph` container from `CODEX_GRAPH_IMAGE` when `/graph/run` detects backend is unavailable |
 | `GRAPH_CONTAINER_NAME` | `codex-graph` | Optional container name used for auto-started `codex.graph` backend |
-| `GRAPH_HEALTH_CHECK_TIMEOUT_SECONDS` | `60` | Max wait time (seconds) for `codex.graph /health` to become ready after auto-start |
 | `GRAPH_RESPONSE_TIMEOUT_SECONDS` | *(unset)* | Optional timeout (seconds) for `POST /graph/run`; `<= 0`, empty, or invalid disables timeout |
 | `REQUEST_QUEUE_MAX_PENDING` | `100` | Max pending requests allowed per queued API before returning `503` |
 | `REQUEST_QUEUE_WAIT_TIMEOUT_SECONDS` | *(unset)* | Optional max wait time in queue before returning `503`; empty/invalid/`<= 0` disables queue wait timeout |
@@ -124,10 +122,10 @@ This configuration:
 - Mounts the host's Docker socket (`/var/run/docker.sock`) so it can spawn sibling containers.
 - Configures `CODEX_AGENT_IMAGE` to `craftslab/codex-agent:latest` for executing agents safely. The server container will spawn this image for each request.
 - Configures `CODEX_INSIGHT_IMAGE` to `craftslab/codex-insight:latest` for insight generation requests.
-- Configures `GRAPH_BASE_URL` to `http://localhost:52104` (override if needed for your network/container setup) for `POST /graph/run` backend access.
+- Uses `docker run` to auto-start `CODEX_GRAPH_IMAGE` (`craftslab/codex-graph:latest`) for `POST /graph/run` and probes `/health` until ready.
+- Uses default graph upstream URL by runtime: `http://host.docker.internal:52104` when `codex.serve` runs in Docker, otherwise `http://localhost:52104`.
 - Supports `GRAPH_MODEL` for `POST /graph/run` payload env forwarding as `LITELLM_MODEL`.
 - Supports `LITELLM_SSL_VERIFY` (default `false`) and optional `LITELLM_CA_BUNDLE` for LiteLLM/self-signed cert scenarios.
-- Uses `CODEX_GRAPH_IMAGE` (`craftslab/codex-graph:latest`) for auto-start.
 - Sets `RUN_RESPONSE_TIMEOUT_SECONDS` in [docker-compose.yml](docker-compose.yml) (default `300`) to bound `POST /agent/run` response time in container deployments.
 
 See [docker-compose.yml](docker-compose.yml) for details.

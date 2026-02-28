@@ -144,7 +144,13 @@ GRAPH_RESPONSE_TIMEOUT_SECONDS = (
     _parse_response_timeout_seconds(os.environ.get("GRAPH_RESPONSE_TIMEOUT_SECONDS")) or 120.0
 )
 
-GRAPH_BASE_URL = (os.environ.get("GRAPH_BASE_URL") or "http://localhost:52104").rstrip("/")
+def _default_graph_base_url() -> str:
+    if os.path.exists("/.dockerenv"):
+        return "http://host.docker.internal:52104"
+    return "http://localhost:52104"
+
+
+GRAPH_BASE_URL = (os.environ.get("GRAPH_BASE_URL") or _default_graph_base_url()).rstrip("/")
 GRAPH_MODEL = (os.environ.get("GRAPH_MODEL") or os.environ.get("LITELLM_MODEL") or "").strip()
 CODEX_GRAPH_IMAGE = (os.environ.get("CODEX_GRAPH_IMAGE") or "craftslab/codex-graph:latest").strip()
 GRAPH_AUTO_START_ENABLED = (os.environ.get("GRAPH_AUTO_START") or "true").strip().lower() in (
@@ -154,9 +160,7 @@ GRAPH_AUTO_START_ENABLED = (os.environ.get("GRAPH_AUTO_START") or "true").strip(
     "on",
 )
 GRAPH_CONTAINER_NAME = (os.environ.get("GRAPH_CONTAINER_NAME") or "codex-graph").strip()
-GRAPH_HEALTH_CHECK_TIMEOUT_SECONDS = (
-    _parse_response_timeout_seconds(os.environ.get("GRAPH_HEALTH_CHECK_TIMEOUT_SECONDS")) or 60.0
-)
+GRAPH_HEALTH_CHECK_TIMEOUT_SECONDS = 60.0
 
 
 def _parse_non_negative_int(value: Optional[str], default_value: int) -> int:
@@ -1137,7 +1141,13 @@ async def _start_graph_backend_with_image() -> tuple[int, str, str]:
         raise HTTPException(status_code=502, detail="CODEX_GRAPH_IMAGE is not configured")
 
     graph_env: Dict[str, str] = {}
-    for env_key in ("LITELLM_BASE_URL", "LITELLM_API_KEY", "LITELLM_SSL_VERIFY", "LITELLM_CA_BUNDLE"):
+    for env_key in (
+        "GEMINI_API_KEY",
+        "LITELLM_BASE_URL",
+        "LITELLM_API_KEY",
+        "LITELLM_SSL_VERIFY",
+        "LITELLM_CA_BUNDLE",
+    ):
         env_val = os.environ.get(env_key)
         if env_val:
             graph_env[env_key] = env_val
@@ -1184,7 +1194,7 @@ async def _ensure_graph_backend_ready() -> None:
         if start_code != 0:
             raise HTTPException(
                 status_code=502,
-                detail=start_stderr.strip() or "Failed to start codex.graph backend via docker compose",
+                detail=start_stderr.strip() or "Failed to start codex.graph backend via docker run",
             )
 
         deadline = asyncio.get_running_loop().time() + GRAPH_HEALTH_CHECK_TIMEOUT_SECONDS
