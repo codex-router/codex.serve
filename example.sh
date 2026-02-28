@@ -260,6 +260,10 @@ echo "queueMaxRetries=${QUEUE_MAX_RETRIES}"
 echo "queueRetryDelaySeconds=${QUEUE_RETRY_DELAY_SECONDS}"
 echo "payloadFile=${GRAPH_PAYLOAD}"
 
+# As of 2026-02, /graph/run executes codex-graph-cli with CLI args:
+#   analyze --code-file /tmp/code.txt --file-path <file> --framework-hint <hint> --pretty
+# The code is written to a temp file and mounted. No --request-json or stdin is used.
+
 python3 - "${GRAPH_MODEL}" > "${GRAPH_PAYLOAD}" <<'PY'
 import json
 import os

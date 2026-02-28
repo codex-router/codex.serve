@@ -152,7 +152,7 @@ def _default_graph_base_url() -> str:
 
 GRAPH_BASE_URL = (os.environ.get("GRAPH_BASE_URL") or _default_graph_base_url()).rstrip("/")
 GRAPH_MODEL = (os.environ.get("GRAPH_MODEL") or os.environ.get("LITELLM_MODEL") or "").strip()
-CODEX_GRAPH_IMAGE = (os.environ.get("CODEX_GRAPH_IMAGE") or "craftslab/codex-graph:latest").strip()
+CODEX_GRAPH_IMAGE = (os.environ.get("CODEX_GRAPH_IMAGE") or "craftslab/codex-graph-cli:latest").strip()
 GRAPH_AUTO_START_ENABLED = (os.environ.get("GRAPH_AUTO_START") or "true").strip().lower() in (
     "1",
     "true",
@@ -942,6 +942,37 @@ async def _run_subprocess_capture(
     return process.returncode if process.returncode is not None else 1, stdout_text, stderr_text
 
 
+async def _run_subprocess_capture_with_stdin(
+    command: List[str],
+    stdin_text: str,
+    timeout: Optional[float] = None,
+    timeout_message: Optional[str] = None,
+    cwd: Optional[str] = None,
+) -> tuple[int, str, str]:
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=cwd,
+    )
+    try:
+        payload = (stdin_text or "").encode("utf-8")
+        if timeout is not None:
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(process.communicate(payload), timeout=timeout)
+        else:
+            stdout_bytes, stderr_bytes = await process.communicate(payload)
+    except asyncio.TimeoutError as exc:
+        await _terminate_process(process)
+        if timeout_message:
+            raise HTTPException(status_code=504, detail=timeout_message) from exc
+        raise
+
+    stdout_text = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
+    stderr_text = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
+    return process.returncode if process.returncode is not None else 1, stdout_text, stderr_text
+
+
 def _build_insight_args(req: InsightRunRequest) -> List[str]:
     args: List[str] = []
     for pattern in req.include or []:
@@ -1370,9 +1401,6 @@ async def run_insight(req: InsightRunRequest):
 async def run_graph(req: GraphRunRequest):
     queue_lease = await GRAPH_REQUEST_QUEUE.acquire()
     try:
-        await _ensure_graph_backend_ready()
-        graph_base_url = await _resolve_graph_base_url_for_requests()
-
         code = (req.code or "").strip()
         file_paths = req.file_paths or []
 
@@ -1381,17 +1409,13 @@ async def run_graph(req: GraphRunRequest):
         if not file_paths:
             raise HTTPException(status_code=400, detail="file_paths is required")
 
-        payload: Dict = {
-            "code": req.code,
-            "file_paths": file_paths,
-        }
+        # Write code to a temp file for mounting
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt") as code_file:
+            code_file.write(code)
+            code_file_path = code_file.name
+
         framework_hint = (req.framework_hint or "").strip() or (_infer_framework_hint(file_paths) or "")
-        if framework_hint:
-            payload["framework_hint"] = framework_hint
-        if req.metadata is not None:
-            payload["metadata"] = req.metadata
-        if req.http_connections:
-            payload["http_connections"] = req.http_connections
+        file_path = file_paths[0] if file_paths else "code.txt"
 
         graph_env: Dict[str, str] = {}
         for env_key in ("LITELLM_BASE_URL", "LITELLM_API_KEY", "LITELLM_SSL_VERIFY", "LITELLM_CA_BUNDLE"):
@@ -1412,49 +1436,50 @@ async def run_graph(req: GraphRunRequest):
         else:
             graph_env.pop("LITELLM_MODEL", None)
 
-        if graph_env:
-            payload["env"] = graph_env
-
-        graph_analyze_url = f"{graph_base_url}/analyze"
         timeout_message = (
             "Request timed out while waiting for codex.graph response "
             f"({GRAPH_RESPONSE_TIMEOUT_SECONDS}s)."
         )
 
-        status_code = 0
-        response_body = ""
         max_attempts = GRAPH_ANALYZE_MAX_RETRIES + 1
         for attempt in range(1, max_attempts + 1):
             try:
-                status_code, response_body = await _post_json(
-                    graph_analyze_url,
-                    payload,
-                    GRAPH_RESPONSE_TIMEOUT_SECONDS,
+                graph_command = ["docker", "run", "--rm", "-v", f"{code_file_path}:/tmp/code.txt:ro"]
+                for env_key, env_val in graph_env.items():
+                    graph_command.extend(["-e", f"{env_key}={env_val}"])
+                graph_command.append(CODEX_GRAPH_IMAGE)
+                graph_command.extend([
+                    "analyze",
+                    "--code-file", "/tmp/code.txt",
+                    "--file-path", file_path,
+                    "--framework-hint", framework_hint,
+                    "--pretty",
+                ])
+                response_code, response_body, response_stderr = await _run_subprocess_capture(
+                    graph_command,
+                    timeout=GRAPH_RESPONSE_TIMEOUT_SECONDS,
+                    timeout_message=timeout_message,
                 )
             except (TimeoutError, socket.timeout) as exc:
                 if attempt < max_attempts:
                     await asyncio.sleep(GRAPH_ANALYZE_RETRY_DELAY_SECONDS)
                     continue
                 raise HTTPException(status_code=504, detail=timeout_message) from exc
-            except urllib.error.URLError as exc:
-                if isinstance(exc.reason, TimeoutError) or isinstance(exc.reason, socket.timeout):
-                    if attempt < max_attempts:
-                        await asyncio.sleep(GRAPH_ANALYZE_RETRY_DELAY_SECONDS)
-                        continue
-                    raise HTTPException(status_code=504, detail=timeout_message) from exc
-                raise HTTPException(status_code=502, detail=f"Failed to call codex.graph: {exc}") from exc
             except Exception as exc:
                 raise HTTPException(status_code=502, detail=f"Failed to call codex.graph: {exc}") from exc
 
-            if 200 <= status_code < 300:
+            if response_code == 0:
                 break
 
-            should_retry = status_code >= 500 or status_code == 429
+            should_retry = attempt < max_attempts
             if should_retry and attempt < max_attempts:
                 await asyncio.sleep(GRAPH_ANALYZE_RETRY_DELAY_SECONDS)
                 continue
 
-            detail = _normalize_graph_upstream_error(status_code, response_body)
+            detail_body = (response_stderr or "").strip() or (response_body or "").strip()
+            if not detail_body:
+                detail_body = "codex.graph CLI container exited with no output"
+            detail = f"codex.graph CLI execution failed (exit {response_code}): {detail_body}"
             if attempt > 1:
                 detail = f"{detail} (after {attempt} attempts)"
             raise HTTPException(status_code=502, detail=detail)
@@ -1475,6 +1500,10 @@ async def run_graph(req: GraphRunRequest):
         )
     finally:
         queue_lease.release()
+        try:
+            os.unlink(code_file_path)
+        except Exception:
+            pass
 
 @app.post("/agent/run")
 async def run_agent(req: RunRequest):

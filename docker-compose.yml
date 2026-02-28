@@ -14,17 +14,13 @@ services:
       # Tell codex.serve to use the insight docker image
       - CODEX_INSIGHT_IMAGE=craftslab/codex-insight:latest
       # Tell codex.serve to use the graph docker image
-      - CODEX_GRAPH_IMAGE=${CODEX_GRAPH_IMAGE:-craftslab/codex-graph:latest}
+      - CODEX_GRAPH_IMAGE=${CODEX_GRAPH_IMAGE:-craftslab/codex-graph-cli:latest}
       # Supported agent providers (comma-separated)
       - AGENT_LIST=codex,kimi,opencode,qwen
       # Supported model IDs (comma-separated)
       - AGENT_MODEL=auto,ollama-kimi-k2.5,ollama-minimax-m2.5,ollama-qwen3-coder
       - INSIGHT_MODEL=ollama-gemini-3-flash-preview
       - GRAPH_MODEL=ollama-gemini-3-flash-preview
-      # Enable automatic codex.graph docker run bootstrap when /graph/run is called
-      - GRAPH_AUTO_START=${GRAPH_AUTO_START:-true}
-      # optional fixed container name used for codex.graph auto-start
-      - GRAPH_CONTAINER_NAME=${GRAPH_CONTAINER_NAME:-codex-graph}
       # LiteLLM endpoint and credentials
       - LITELLM_BASE_URL=${LITELLM_BASE_URL}
       - LITELLM_API_KEY=${LITELLM_API_KEY}
