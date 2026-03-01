@@ -20,6 +20,8 @@ GRAPH_CONTAINER_NAME="${GRAPH_CONTAINER_NAME:-codex-graph}"
 QUEUE_MAX_RETRIES="${QUEUE_MAX_RETRIES:-3}"
 QUEUE_RETRY_DELAY_SECONDS="${QUEUE_RETRY_DELAY_SECONDS:-3}"
 DEMO_CONTEXT_OVERFLOW="${DEMO_CONTEXT_OVERFLOW:-false}"
+SANDBOX_DEMO_ENABLED="${SANDBOX_DEMO_ENABLED:-true}"
+SANDBOX_COMMAND="${SANDBOX_COMMAND:-echo hello-from-sandbox}"
 RUN_DATE="$(date +%Y%m%d-%H%M%S)"
 OUT_PATH="${OUT_PATH:-/tmp/codex-serve-example-out-${RUN_DATE}}"
 
@@ -27,6 +29,8 @@ INSIGHT_PAYLOAD="/tmp/codex-serve-insight-payload-${RUN_DATE}.json"
 INSIGHT_RESPONSE="/tmp/codex-serve-insight-response-${RUN_DATE}.json"
 GRAPH_PAYLOAD="/tmp/codex-serve-graph-payload-${RUN_DATE}.json"
 GRAPH_RESPONSE="/tmp/codex-serve-graph-response-${RUN_DATE}.json"
+SANDBOX_PAYLOAD="/tmp/codex-serve-sandbox-payload-${RUN_DATE}.json"
+SANDBOX_RESPONSE="/tmp/codex-serve-sandbox-response-${RUN_DATE}.json"
 
 resolve_graph_model_from_compose() {
   local compose_file="${COMPOSE_FILE:-${SCRIPT_DIR}/docker-compose.yml}"
@@ -81,6 +85,8 @@ cleanup() {
   rm -f "${INSIGHT_RESPONSE}"
   rm -f "${GRAPH_PAYLOAD}"
   rm -f "${GRAPH_RESPONSE}"
+  rm -f "${SANDBOX_PAYLOAD}"
+  rm -f "${SANDBOX_RESPONSE}"
 }
 trap cleanup EXIT
 
@@ -353,6 +359,39 @@ while true; do
 done
 
 cat "${GRAPH_RESPONSE}"
+
+if [[ "${SANDBOX_DEMO_ENABLED}" =~ ^(1|true|yes|on)$ ]]; then
+  echo
+  echo "Testing POST ${BASE_URL}/sandbox/run"
+  echo "sandboxCommand=${SANDBOX_COMMAND}"
+
+  python3 - "${SANDBOX_COMMAND}" > "${SANDBOX_PAYLOAD}" <<'PY'
+import json
+import sys
+
+command = sys.argv[1]
+
+payload = {
+  "command": command,
+  "timeoutSeconds": 30,
+}
+
+print(json.dumps(payload))
+PY
+
+  sandbox_status_code="$(curl -sS -X POST "${BASE_URL}/sandbox/run" \
+    -H "Content-Type: application/json" \
+    --data-binary "@${SANDBOX_PAYLOAD}" \
+    -o "${SANDBOX_RESPONSE}" \
+    -w "%{http_code}")"
+
+  if [[ "${sandbox_status_code}" -ge 200 && "${sandbox_status_code}" -lt 300 ]]; then
+    cat "${SANDBOX_RESPONSE}"
+  else
+    echo "sandbox/run returned HTTP ${sandbox_status_code}."
+    cat "${SANDBOX_RESPONSE}"
+  fi
+fi
 
 echo
 echo "Done. If successful, generated files are written to: ${OUT_PATH}"

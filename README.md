@@ -7,7 +7,8 @@ HTTP server implementation for the Codex Gerrit plugin. This service exposes a R
 - Exposes a `POST /agent/run` endpoint to execute agent commands.
 - Exposes a `POST /insight/run` endpoint to execute `codex-insight` Docker jobs and return generated insight pages.
 - Exposes a `POST /graph/run` endpoint to execute `codex.graph` CLI image using `analyze --request-json -` (stdin payload).
-- Supports in-memory request queueing with bounded pending requests and per-endpoint concurrency limits for `/agent/run`, `/insight/run`, and `/graph/run`.
+- Exposes a `POST /sandbox/run` endpoint to execute shell commands through sandbox-runtime (`srt`).
+- Supports in-memory request queueing with bounded pending requests and per-endpoint concurrency limits for `/agent/run`, `/insight/run`, `/graph/run`, and `/sandbox/run`.
 - Supports on-demand `docker run --rm -i` execution of `codex.graph` CLI image for each `/graph/run` request.
 - Exposes a `POST /sessions/{sessionId}/stop` endpoint to stop an active `/agent/run` session.
 - Exposes a `GET /models` endpoint to return model IDs from `AGENT_MODEL`.
@@ -65,11 +66,14 @@ The server reads supported agents from `AGENT_LIST` (comma-separated). In local 
 | `GRAPH_MODEL` | *(unset)* | Default graph model for `POST /graph/run` (mapped to forwarded payload env `LITELLM_MODEL`; falls back to `LITELLM_MODEL` when unset) |
 | `CODEX_GRAPH_IMAGE` | `craftslab/codex-graph-cli:latest` | Docker image used by `POST /graph/run` for direct `main.py analyze` execution |
 | `GRAPH_RESPONSE_TIMEOUT_SECONDS` | *(unset)* | Optional timeout (seconds) for `POST /graph/run`; `<= 0`, empty, or invalid disables timeout |
+| `SANDBOX_RUNTIME_BIN` | `srt` | Runtime executable used by `POST /sandbox/run` (for example `srt`) |
+| `SANDBOX_RUN_TIMEOUT_SECONDS` | `60` | Default timeout (seconds) for `POST /sandbox/run` when request timeout is omitted or invalid |
 | `REQUEST_QUEUE_MAX_PENDING` | `100` | Max pending requests allowed per queued API before returning `503` |
 | `REQUEST_QUEUE_WAIT_TIMEOUT_SECONDS` | *(unset)* | Optional max wait time in queue before returning `503`; empty/invalid/`<= 0` disables queue wait timeout |
 | `AGENT_MAX_CONCURRENT_REQUESTS` | `4` | Max concurrently executing requests for `POST /agent/run` |
 | `INSIGHT_MAX_CONCURRENT_REQUESTS` | `2` | Max concurrently executing requests for `POST /insight/run` |
 | `GRAPH_MAX_CONCURRENT_REQUESTS` | `4` | Max concurrently executing requests for `POST /graph/run` |
+| `SANDBOX_MAX_CONCURRENT_REQUESTS` | `2` | Max concurrently executing requests for `POST /sandbox/run` |
 | `AUTO_COMPRESS_ON_CONTEXT_OVERFLOW` | `true` | Automatically compresses oversized `/agent/run` stdin/history and retries once when stderr indicates model context overflow |
 | `AUTO_COMPRESS_MAX_CHARS` | `24000` | Target max character budget for compressed `/agent/run` stdin payload |
 | `AUTO_COMPRESS_KEEP_HEAD_CHARS` | `6000` | Head segment character budget preserved before tail content during automatic compression |
@@ -141,10 +145,11 @@ To verify Docker mode end-to-end (including `CODEX_AGENT_IMAGE`), run:
 This test now validates:
 - The agent image built from `codex.agent/Dockerfile` is Ubuntu-based and all supported agents are callable.
 - A `codex.serve` container built from this module's `Dockerfile` can execute `POST /agent/run` requests by launching the configured `CODEX_AGENT_IMAGE`.
+- `/sandbox/run` request handling end-to-end (with deterministic runtime override in smoke environment).
 
 ### Example Script (`example.sh`)
 
-To run a local end-to-end demo (`/agent/run`, `/insight/run`, `/graph/run`), start the server first and then run:
+To run a local end-to-end demo (`/agent/run`, `/insight/run`, `/graph/run`, `/sandbox/run`), start the server first and then run:
 
 ```bash
 ./example.sh
@@ -165,6 +170,7 @@ The script sends `POST /agent/run` with:
 Then it sends:
 - `POST /insight/run` using files collected from `REPO_PATH` (default: current directory)
 - `POST /graph/run` with a minimal payload (`code`, `file_paths`, `framework_hint`)
+- `POST /sandbox/run` with a configurable command
 
 Supported overrides:
 - `BASE_URL` (default `http://localhost:8000`)
@@ -172,6 +178,8 @@ Supported overrides:
 - `OUT_PATH` (default `/tmp/codex-serve-example-out-<timestamp>`)
 - `DRY_RUN` for `/insight/run` (default `false`)
 - `GRAPH_MODEL` (mapped to graph request `env.LITELLM_MODEL` when set)
+- `SANDBOX_DEMO_ENABLED` to toggle sandbox demo request (default `true`)
+- `SANDBOX_COMMAND` command text sent to `/sandbox/run` (default `echo hello-from-sandbox`)
 - `LITELLM_SSL_VERIFY` and `LITELLM_CA_BUNDLE` (forwarded in request env)
 
 Expected output is NDJSON containing `session`, streamed `stdout`/`stderr`, and a final `exit` object.
@@ -179,6 +187,8 @@ If response timeout is configured server-side and reached, the stream may end wi
 
 For `POST /graph/run`, success returns JSON containing `graph`, `usage`, and `cost`.
 A minimal smoke-test payload may return an empty graph (`nodes: []`, `edges: []`) while still indicating a successful end-to-end execution.
+
+For `POST /sandbox/run`, success returns JSON containing `stdout`, `stderr`, `exit_code`, `command`, and timeout metadata.
 
 ## API
 
@@ -404,23 +414,55 @@ When `CODEX_INSIGHT_IMAGE` is `craftslab/codex-insight:latest` (or `codex-insigh
 
 ### `POST /graph/run`
 
-Proxies graph generation to `codex.graph` backend API:
+Proxies graph generation to `codex.graph` CLI image.
 
-```text
-POST /graph/run
-```
-
-
-For each `/graph/run` request, codex.serve writes the code to a temp file, mounts it into the container, and runs:
+For each `/graph/run` request, `codex.serve` serializes the request payload and runs:
 
 ```bash
-docker run --rm -v <code-file>:/tmp/code.txt:ro \
+docker run --rm -i \
   -e LITELLM_BASE_URL=... -e LITELLM_API_KEY=... -e LITELLM_MODEL=... \
   craftslab/codex-graph-cli:latest \
-  analyze --code-file /tmp/code.txt --file-path <file> --framework-hint <hint> --pretty
+  analyze --request-json - --pretty
 ```
 
-All arguments are passed via CLI, not stdin. No `--request-json` is used. See [codex.graph/README_codex.graph.md](../codex.graph/README_codex.graph.md) for details.
+The analyze payload (`code`, `file_paths`, optional `framework_hint`, optional `metadata`, optional `http_connections`) is sent on stdin as JSON.
+
+If queueing is enabled and the request queue is saturated (pending limit reached) or queue wait timeout is exceeded, endpoint returns `503`.
+
+### `POST /sandbox/run`
+
+Runs a command using sandbox-runtime wrapper executable (default `srt`).
+
+**Request Body:**
+
+```json
+{
+  "command": "echo hello-from-sandbox",
+  "cwd": "/tmp",
+  "timeoutSeconds": 30,
+  "settingsPath": "/home/user/.srt-settings.json",
+  "env": {
+    "DEMO_KEY": "demo-value"
+  }
+}
+```
+
+- `command` is required.
+- `cwd`, `settingsPath`, `timeoutSeconds`, and `env` are optional.
+- If `timeoutSeconds` is omitted/invalid, `SANDBOX_RUN_TIMEOUT_SECONDS` is used.
+
+**Response:**
+
+```json
+{
+  "stdout": "hello-from-sandbox\n",
+  "stderr": "",
+  "exit_code": 0,
+  "command": "echo hello-from-sandbox",
+  "timed_out": false,
+  "timeout_seconds": 30
+}
+```
 
 If queueing is enabled and the request queue is saturated (pending limit reached) or queue wait timeout is exceeded, endpoint returns `503`.
 

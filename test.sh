@@ -111,6 +111,7 @@ docker run -d \
 	-e LITELLM_API_KEY="test-api-key" \
 	-e LITELLM_SSL_VERIFY="false" \
 	-e LITELLM_CA_BUNDLE="" \
+	-e SANDBOX_RUNTIME_BIN="echo" \
 	"${SERVE_IMAGE_TAG}" >/dev/null
 
 echo "- Waiting for codex.serve readiness..."
@@ -129,10 +130,11 @@ if [ "${ready}" -ne 1 ]; then
 	exit 1
 fi
 
-echo "[6/6] Testing codex.serve APIs (/agents, /models, /agent/run, /insight/run, /graph/run)"
+echo "[6/6] Testing codex.serve APIs (/agents, /models, /sandbox/run, /agent/run, /insight/run, /graph/run)"
 TMP_DIR="$(mktemp -d)"
 AGENTS_BODY="${TMP_DIR}/agents.json"
 MODELS_BODY="${TMP_DIR}/models.json"
+SANDBOX_RUN_BODY="${TMP_DIR}/sandbox-run.json"
 RUN_BODY="${TMP_DIR}/run.ndjson"
 CONTEXT_RUN_BODY="${TMP_DIR}/context-run.ndjson"
 CONTEXT_RUN_PAYLOAD="${TMP_DIR}/context-run.json"
@@ -197,6 +199,39 @@ if models != expected_models:
 
 if count != len(expected_models):
 	raise SystemExit(f"/models count mismatch: got {count}, expected {len(expected_models)}")
+PY
+
+echo "- Testing POST /sandbox/run"
+SANDBOX_STATUS="$(curl -sS -o "${SANDBOX_RUN_BODY}" -w "%{http_code}" \
+	-X POST "http://127.0.0.1:${SERVE_PORT}/sandbox/run" \
+	-H "Content-Type: application/json" \
+	-d '{"command":"sandbox-smoke-ok","timeoutSeconds":15}')"
+
+if [ "${SANDBOX_STATUS}" != "200" ]; then
+	echo "Expected HTTP 200 from /sandbox/run, got ${SANDBOX_STATUS}"
+	cat "${SANDBOX_RUN_BODY}"
+	exit 1
+fi
+
+python3 - "${SANDBOX_RUN_BODY}" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+	data = json.load(f)
+
+if data.get("command") != "sandbox-smoke-ok":
+	raise SystemExit(f"/sandbox/run command mismatch: {data}")
+
+if data.get("exit_code") != 0:
+	raise SystemExit(f"/sandbox/run expected exit_code 0, got {data.get('exit_code')}")
+
+stdout = data.get("stdout", "")
+if "sandbox-smoke-ok" not in stdout:
+	raise SystemExit(f"/sandbox/run stdout mismatch: {stdout!r}")
+
+if data.get("timed_out") not in (False, None):
+	raise SystemExit(f"/sandbox/run timed_out mismatch: {data.get('timed_out')}")
 PY
 
 echo "- Testing POST /agent/run"

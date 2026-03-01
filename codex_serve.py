@@ -93,6 +93,23 @@ class GraphRunResponse(BaseModel):
     usage: Optional[Dict] = None
     cost: Optional[Dict] = None
 
+
+class SandboxRunRequest(BaseModel):
+    command: str
+    cwd: Optional[str] = None
+    timeoutSeconds: Optional[float] = None
+    settingsPath: Optional[str] = None
+    env: Optional[Dict[str, str]] = None
+
+
+class SandboxRunResponse(BaseModel):
+    stdout: str
+    stderr: str
+    exit_code: int
+    command: str
+    timed_out: bool = False
+    timeout_seconds: Optional[float] = None
+
 # Supported agent providers, configurable via env (comma-separated)
 DEFAULT_AGENT_LIST = ["codex"]
 AGENT_LIST = [
@@ -205,6 +222,15 @@ INSIGHT_MAX_CONCURRENT_REQUESTS = _parse_non_negative_int(
 GRAPH_MAX_CONCURRENT_REQUESTS = _parse_non_negative_int(
     os.environ.get("GRAPH_MAX_CONCURRENT_REQUESTS"),
     4,
+)
+SANDBOX_MAX_CONCURRENT_REQUESTS = _parse_non_negative_int(
+    os.environ.get("SANDBOX_MAX_CONCURRENT_REQUESTS"),
+    2,
+)
+
+SANDBOX_RUNTIME_BIN = (os.environ.get("SANDBOX_RUNTIME_BIN") or "srt").strip() or "srt"
+SANDBOX_RUN_TIMEOUT_SECONDS = (
+    _parse_response_timeout_seconds(os.environ.get("SANDBOX_RUN_TIMEOUT_SECONDS")) or 60.0
 )
 
 AUTO_COMPRESS_ON_CONTEXT_OVERFLOW = (
@@ -358,6 +384,13 @@ INSIGHT_REQUEST_QUEUE = RequestAdmissionQueue(
 GRAPH_REQUEST_QUEUE = RequestAdmissionQueue(
     name="graph.run",
     max_concurrency=GRAPH_MAX_CONCURRENT_REQUESTS,
+    max_pending=REQUEST_QUEUE_MAX_PENDING,
+    wait_timeout_seconds=REQUEST_QUEUE_WAIT_TIMEOUT_SECONDS,
+)
+
+SANDBOX_REQUEST_QUEUE = RequestAdmissionQueue(
+    name="sandbox.run",
+    max_concurrency=SANDBOX_MAX_CONCURRENT_REQUESTS,
     max_pending=REQUEST_QUEUE_MAX_PENDING,
     wait_timeout_seconds=REQUEST_QUEUE_WAIT_TIMEOUT_SECONDS,
 )
@@ -1201,12 +1234,14 @@ async def _run_subprocess_capture(
     timeout: Optional[float] = None,
     timeout_message: Optional[str] = None,
     cwd: Optional[str] = None,
+    env: Optional[Dict[str, str]] = None,
 ) -> tuple[int, str, str]:
     process = await asyncio.create_subprocess_exec(
         *command,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=cwd,
+        env=env,
     )
     try:
         if timeout is not None:
@@ -1788,6 +1823,65 @@ async def run_graph(req: GraphRunRequest):
             usage=parsed.get("usage"),
             cost=parsed.get("cost"),
         )
+    finally:
+        queue_lease.release()
+
+
+@app.post("/sandbox/run", response_model=SandboxRunResponse)
+async def run_sandbox(req: SandboxRunRequest):
+    queue_lease = await SANDBOX_REQUEST_QUEUE.acquire()
+    try:
+        command_text = (req.command or "").strip()
+        if not command_text:
+            raise HTTPException(status_code=400, detail="command is required")
+
+        cwd_value = (req.cwd or "").strip() or None
+        settings_path = (req.settingsPath or "").strip()
+
+        timeout_seconds = req.timeoutSeconds
+        if timeout_seconds is None or timeout_seconds <= 0:
+            timeout_seconds = SANDBOX_RUN_TIMEOUT_SECONDS
+
+        sandbox_command = [SANDBOX_RUNTIME_BIN]
+        if settings_path:
+            sandbox_command.extend(["--settings", settings_path])
+        sandbox_command.append(command_text)
+
+        popen_env = os.environ.copy()
+        if req.env:
+            for key, value in req.env.items():
+                normalized_key = (key or "").strip()
+                if not normalized_key:
+                    continue
+                popen_env[normalized_key] = "" if value is None else str(value)
+
+        try:
+            exit_code, stdout_text, stderr_text = await _run_subprocess_capture(
+                sandbox_command,
+                timeout=timeout_seconds,
+                cwd=cwd_value,
+                env=popen_env,
+            )
+            return SandboxRunResponse(
+                stdout=stdout_text,
+                stderr=stderr_text,
+                exit_code=exit_code,
+                command=command_text,
+                timed_out=False,
+                timeout_seconds=timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            return SandboxRunResponse(
+                stdout="",
+                stderr=(
+                    "Request timed out while waiting for sandbox response "
+                    f"({timeout_seconds}s)."
+                ),
+                exit_code=124,
+                command=command_text,
+                timed_out=True,
+                timeout_seconds=timeout_seconds,
+            )
     finally:
         queue_lease.release()
 
