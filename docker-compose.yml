@@ -16,7 +16,7 @@ services:
       # Tell codex.serve to use the graph docker image
       - CODEX_GRAPH_IMAGE=${CODEX_GRAPH_IMAGE:-craftslab/codex-graph-cli:latest}
       # Supported agent providers (comma-separated)
-      - AGENT_LIST=codex,kimi,opencode,qwen
+      - AGENT_LIST=codex,kimi,opencode,qwen,team
       # Supported model IDs (comma-separated)
       - AGENT_MODEL=auto,ollama-kimi-k2.5,ollama-minimax-m2.5,ollama-qwen3-coder
       - INSIGHT_MODEL=ollama-gemini-3-flash-preview

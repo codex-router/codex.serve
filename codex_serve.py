@@ -100,6 +100,7 @@ AGENT_LIST = [
     for agent in os.environ.get("AGENT_LIST", ",".join(DEFAULT_AGENT_LIST)).split(",")
     if agent.strip()
 ]
+TEAM_AGENT_NAME = "team"
 
 # Optional Docker configuration
 DOCKER_IMAGE = os.environ.get("CODEX_AGENT_IMAGE")
@@ -113,6 +114,7 @@ AGENT_MODEL = [
 ]
 
 RUN_SESSIONS: Dict[str, asyncio.subprocess.Process] = {}
+TEAM_RUN_SESSIONS = set()
 STOP_REQUESTED_SESSIONS = set()
 SESSIONS_LOCK = asyncio.Lock()
 
@@ -751,6 +753,264 @@ def _build_docker_env(agent: str, args: List[str], req_env: Optional[Dict[str, s
     return docker_env
 
 
+def _build_agent_command(
+    agent: str,
+    args: List[str],
+    req_env: Optional[Dict[str, str]],
+) -> tuple[List[str], Dict[str, str]]:
+    popen_env = os.environ.copy()
+    normalized_args = list(args)
+
+    if DOCKER_IMAGE:
+        command = ["docker", "run", "--rm", "-i"]
+        docker_env = _build_docker_env(agent, normalized_args, req_env)
+
+        if agent in ("opencode", "codex", "kimi"):
+            normalized_args = _strip_model_args(normalized_args)
+
+        for env_key, env_val in docker_env.items():
+            command.extend(["-e", f"{env_key}={env_val}"])
+
+        command.append(DOCKER_IMAGE)
+        command.append(agent)
+        command.extend(normalized_args)
+        return command, popen_env
+
+    command = [agent] + normalized_args
+    if req_env:
+        popen_env.update(req_env)
+    return command, popen_env
+
+
+def _team_specialist_agents() -> List[str]:
+    specialists: List[str] = []
+    for item in AGENT_LIST:
+        normalized = (item or "").strip()
+        if not normalized or normalized == TEAM_AGENT_NAME:
+            continue
+        if normalized not in specialists:
+            specialists.append(normalized)
+    return specialists
+
+
+def _build_team_round1_prompt(user_prompt: str, role: str, agent_name: str) -> str:
+    return (
+        "You are participating in a multi-agent collaboration.\\n"
+        f"Your role: {role}.\\n"
+        f"Agent identity: {agent_name}.\\n"
+        "Task: Solve the user's request with your role-specific strengths.\\n"
+        "Output format:\\n"
+        "1) Findings\\n"
+        "2) Proposed answer\\n"
+        "3) Uncertainty and checks\\n"
+        "Keep the response concise but high signal.\\n\\n"
+        "User request:\\n"
+        f"{user_prompt}"
+    )
+
+
+def _build_team_round2_prompt(
+    user_prompt: str,
+    role: str,
+    agent_name: str,
+    round1_responses: Dict[str, str],
+) -> str:
+    response_lines: List[str] = []
+    for peer_name, peer_response in round1_responses.items():
+        if peer_name == agent_name:
+            continue
+        response_lines.append(f"[{peer_name}]\\n{peer_response.strip()}")
+
+    peers_block = "\\n\\n".join(response_lines).strip() or "(No peer responses available)"
+    return (
+        "You are in round 2 of a multi-agent internal debate.\\n"
+        f"Your role: {role}.\\n"
+        f"Agent identity: {agent_name}.\\n"
+        "Review peer proposals, challenge weak assumptions, and improve your prior solution.\\n"
+        "Output format:\\n"
+        "1) Critique of peers\\n"
+        "2) Revised proposal\\n"
+        "3) Confidence level and remaining risks\\n\\n"
+        "Original user request:\\n"
+        f"{user_prompt}\\n\\n"
+        "Peer responses from round 1:\\n"
+        f"{peers_block}"
+    )
+
+
+def _build_team_synthesis_prompt(
+    user_prompt: str,
+    coordinator_agent: str,
+    round1_responses: Dict[str, str],
+    round2_responses: Dict[str, str],
+) -> str:
+    round1_lines = [
+        f"[{agent_name}]\\n{content.strip()}"
+        for agent_name, content in round1_responses.items()
+    ]
+    round2_lines = [
+        f"[{agent_name}]\\n{content.strip()}"
+        for agent_name, content in round2_responses.items()
+    ]
+
+    round1_block = "\\n\\n".join(round1_lines).strip() or "(No round 1 responses available)"
+    round2_block = "\\n\\n".join(round2_lines).strip() or "(No round 2 responses available)"
+
+    return (
+        "You are the synthesis coordinator in a multi-agent system.\\n"
+        f"Coordinator agent identity: {coordinator_agent}.\\n"
+        "Produce ONE final answer for the user.\\n"
+        "Requirements:\\n"
+        "- Merge the strongest ideas from all agents.\\n"
+        "- Resolve conflicts explicitly when recommendations differ.\\n"
+        "- Prioritize correctness, clear assumptions, and reduced hallucinations.\\n"
+        "- Do not mention internal roles, debate rounds, or hidden chain-of-thought.\\n"
+        "- Keep only the final user-facing answer.\\n\\n"
+        "Original user request:\\n"
+        f"{user_prompt}\\n\\n"
+        "Round 1 specialist outputs:\\n"
+        f"{round1_block}\\n\\n"
+        "Round 2 debate outputs:\\n"
+        f"{round2_block}"
+    )
+
+
+async def _execute_agent_once(
+    agent: str,
+    args: List[str],
+    stdin_payload: str,
+    req_env: Optional[Dict[str, str]],
+) -> Dict[str, Any]:
+    command, popen_env = _build_agent_command(agent, args, req_env)
+    timeout_message = (
+        "Request timed out while waiting for agent response "
+        f"({RESPONSE_TIMEOUT_SECONDS}s)."
+    )
+
+    current_payload = stdin_payload
+    compression_retried = False
+    while True:
+        exit_code, stdout_text, stderr_text = await _run_subprocess_capture_with_stdin(
+            command,
+            stdin_text=current_payload,
+            timeout=RESPONSE_TIMEOUT_SECONDS,
+            timeout_message=timeout_message,
+            env=popen_env,
+        )
+
+        should_retry_with_compression = (
+            AUTO_COMPRESS_ON_CONTEXT_OVERFLOW
+            and not compression_retried
+            and exit_code != 0
+            and _is_context_overflow_error(stderr_text)
+        )
+        if should_retry_with_compression:
+            compressed_payload = _compress_stdin_payload(
+                current_payload,
+                AUTO_COMPRESS_MAX_CHARS,
+                AUTO_COMPRESS_KEEP_HEAD_CHARS,
+            )
+            if compressed_payload != current_payload:
+                current_payload = compressed_payload
+                compression_retried = True
+                continue
+
+        return {
+            "agent": agent,
+            "exit_code": exit_code,
+            "stdout": stdout_text,
+            "stderr": stderr_text,
+            "compressed_retry": compression_retried,
+        }
+
+
+async def _execute_team_collaboration(
+    session_id: str,
+    normalized_req_args: List[str],
+    stdin_payload: str,
+    req_env: Optional[Dict[str, str]],
+) -> Dict[str, Any]:
+    await _assert_session_not_stopped(session_id)
+
+    specialists = _team_specialist_agents()
+    if not specialists:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Team mode requires at least one specialist agent in AGENT_LIST "
+                f"besides '{TEAM_AGENT_NAME}'."
+            ),
+        )
+
+    team_roles = [
+        "coordinator",
+        "research expert",
+        "logic expert",
+        "creative expert",
+    ]
+
+    role_by_agent: Dict[str, str] = {}
+    for index, agent_name in enumerate(specialists):
+        role_by_agent[agent_name] = team_roles[index % len(team_roles)]
+
+    round1_tasks = [
+        _execute_agent_once(
+            agent_name,
+            normalized_req_args,
+            _build_team_round1_prompt(stdin_payload, role_by_agent[agent_name], agent_name),
+            req_env,
+        )
+        for agent_name in specialists
+    ]
+    round1_results = await asyncio.gather(*round1_tasks)
+    await _assert_session_not_stopped(session_id)
+    round1_stdout_map: Dict[str, str] = {
+        result["agent"]: (result.get("stdout") or "").strip() for result in round1_results
+    }
+
+    round2_tasks = [
+        _execute_agent_once(
+            agent_name,
+            normalized_req_args,
+            _build_team_round2_prompt(
+                stdin_payload,
+                role_by_agent[agent_name],
+                agent_name,
+                round1_stdout_map,
+            ),
+            req_env,
+        )
+        for agent_name in specialists
+    ]
+    round2_results = await asyncio.gather(*round2_tasks)
+    await _assert_session_not_stopped(session_id)
+    round2_stdout_map: Dict[str, str] = {
+        result["agent"]: (result.get("stdout") or "").strip() for result in round2_results
+    }
+
+    coordinator_agent = specialists[0]
+    synthesis_result = await _execute_agent_once(
+        coordinator_agent,
+        normalized_req_args,
+        _build_team_synthesis_prompt(
+            stdin_payload,
+            coordinator_agent,
+            round1_stdout_map,
+            round2_stdout_map,
+        ),
+        req_env,
+    )
+
+    return {
+        "specialists": specialists,
+        "roles": role_by_agent,
+        "round1": round1_results,
+        "round2": round2_results,
+        "synthesis": synthesis_result,
+        "coordinator": coordinator_agent,
+    }
+
+
 async def _terminate_process(process: asyncio.subprocess.Process) -> None:
     if process.returncode is not None:
         return
@@ -809,6 +1069,28 @@ async def _get_active_session_process(sessionId: str) -> Optional[asyncio.subpro
         if process is None or process.returncode is not None:
             return None
         return process
+
+
+async def _is_team_session_active(sessionId: str) -> bool:
+    async with SESSIONS_LOCK:
+        return sessionId in TEAM_RUN_SESSIONS
+
+
+async def _register_team_session(sessionId: str) -> None:
+    async with SESSIONS_LOCK:
+        TEAM_RUN_SESSIONS.add(sessionId)
+
+
+async def _unregister_team_session(sessionId: str) -> None:
+    async with SESSIONS_LOCK:
+        TEAM_RUN_SESSIONS.discard(sessionId)
+        STOP_REQUESTED_SESSIONS.discard(sessionId)
+
+
+async def _assert_session_not_stopped(sessionId: str) -> None:
+    stopped = await _consume_stop_requested(sessionId)
+    if stopped:
+        raise asyncio.CancelledError("Session stopped via API.")
 
 
 def _normalize_required_path(value: str, field_name: str) -> str:
@@ -948,6 +1230,7 @@ async def _run_subprocess_capture_with_stdin(
     timeout: Optional[float] = None,
     timeout_message: Optional[str] = None,
     cwd: Optional[str] = None,
+    env: Optional[Dict[str, str]] = None,
 ) -> tuple[int, str, str]:
     process = await asyncio.create_subprocess_exec(
         *command,
@@ -955,6 +1238,7 @@ async def _run_subprocess_capture_with_stdin(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=cwd,
+        env=env,
     )
     try:
         payload = (stdin_text or "").encode("utf-8")
@@ -1267,11 +1551,13 @@ async def stop_session(sessionId: str):
         raise HTTPException(status_code=400, detail="sessionId cannot be empty")
 
     process = await _get_active_session_process(normalizedSessionId)
-    if process is None:
+    team_session_active = await _is_team_session_active(normalizedSessionId)
+    if process is None and not team_session_active:
         raise HTTPException(status_code=404, detail=f"Session not found or already finished: {normalizedSessionId}")
 
     await _mark_stop_requested(normalizedSessionId)
-    await _terminate_process(process)
+    if process is not None:
+        await _terminate_process(process)
     return {
         "sessionId": normalizedSessionId,
         "status": "stopped",
@@ -1518,44 +1804,101 @@ async def run_agent(req: RunRequest):
     if existing_process is not None:
         raise HTTPException(status_code=409, detail=f"Session is already running: {sessionId}")
 
-    popen_env = os.environ.copy()
+    if req.agent == TEAM_AGENT_NAME and await _is_team_session_active(sessionId):
+        raise HTTPException(status_code=409, detail=f"Session is already running: {sessionId}")
+
     normalized_req_args = list(req.args)
     auto_selected_model = await _resolve_auto_model(normalized_req_args, req.env)
     if auto_selected_model:
         normalized_req_args = _replace_model_args(normalized_req_args, auto_selected_model)
 
-    if DOCKER_IMAGE:
-        # Run inside Docker
-        command = ["docker", "run", "--rm", "-i"]
-
-        normalized_args = normalized_req_args
-        docker_env = _build_docker_env(req.agent, normalized_req_args, req.env)
-
-        # opencode, codex, and kimi in codex.agent expect model via LITELLM_MODEL and will
-        # inject a provider-aware --model value for non-interactive runs.
-        if req.agent in ("opencode", "codex", "kimi"):
-            normalized_args = _strip_model_args(normalized_req_args)
-
-        for k, v in docker_env.items():
-            command.extend(["-e", f"{k}={v}"])
-
-        command.append(DOCKER_IMAGE)
-        # Use simple agent name inside container (matches Dockerfile symlinks)
-        command.append(req.agent)
-        command.extend(normalized_args)
-    else:
-        # Run locally
-        executable = req.agent
-        command = [executable] + normalized_req_args
-        if req.env:
-            popen_env.update(req.env)
+    command, popen_env = _build_agent_command(req.agent, normalized_req_args, req.env)
 
     queue_lease = await AGENT_REQUEST_QUEUE.acquire()
 
     async def stream_generator():
+        yield json.dumps({"type": "session", "id": sessionId}) + "\n"
+
+        if req.agent == TEAM_AGENT_NAME:
+            try:
+                await _register_team_session(sessionId)
+                yield json.dumps(
+                    {
+                        "type": "stderr",
+                        "data": "Team mode enabled. Running multi-agent collaboration in parallel.\n",
+                    }
+                ) + "\n"
+                team_result = await _execute_team_collaboration(
+                    session_id=sessionId,
+                    normalized_req_args=normalized_req_args,
+                    stdin_payload=stdin_payload,
+                    req_env=req.env,
+                )
+
+                for round_key in ("round1", "round2"):
+                    for item in team_result.get(round_key, []):
+                        agent_name = item.get("agent") or "unknown"
+                        exit_code = item.get("exit_code", 1)
+                        retry_note = " with compressed-retry" if item.get("compressed_retry") else ""
+                        yield json.dumps(
+                            {
+                                "type": "stderr",
+                                "data": (
+                                    f"[team/{round_key}] {agent_name} finished with exit {exit_code}{retry_note}.\n"
+                                ),
+                            }
+                        ) + "\n"
+
+                synthesis = team_result.get("synthesis") or {}
+                synthesis_stdout = (synthesis.get("stdout") or "").strip()
+                synthesis_stderr = (synthesis.get("stderr") or "").strip()
+                synthesis_code = synthesis.get("exit_code", 1)
+
+                if synthesis_stderr:
+                    yield json.dumps(
+                        {
+                            "type": "stderr",
+                            "data": f"[team/synthesis] {synthesis_stderr}\n",
+                        }
+                    ) + "\n"
+
+                if synthesis_stdout:
+                    if not synthesis_stdout.endswith("\n"):
+                        synthesis_stdout += "\n"
+                    yield json.dumps(
+                        {
+                            "type": "stdout",
+                            "data": synthesis_stdout,
+                        }
+                    ) + "\n"
+
+                yield json.dumps({"type": "exit", "code": synthesis_code}) + "\n"
+            except asyncio.CancelledError:
+                yield json.dumps({"type": "stderr", "data": "Session stopped via API.\n"}) + "\n"
+                yield json.dumps({"type": "exit", "code": 0}) + "\n"
+            except asyncio.TimeoutError:
+                timeout_msg = (
+                    "Request timed out while waiting for team response "
+                    f"({RESPONSE_TIMEOUT_SECONDS}s)."
+                )
+                yield json.dumps({"type": "stderr", "data": timeout_msg}) + "\n"
+                yield json.dumps({"type": "exit", "code": 124}) + "\n"
+            except HTTPException as http_error:
+                detail = str(http_error.detail) if http_error.detail is not None else "Team execution failed"
+                yield json.dumps({"type": "stderr", "data": f"{detail}\n"}) + "\n"
+                yield json.dumps({"type": "exit", "code": 1}) + "\n"
+            except Exception as error:
+                yield json.dumps(
+                    {"type": "stderr", "data": f"Internal Server Error: {str(error)}"}
+                ) + "\n"
+                yield json.dumps({"type": "exit", "code": 1}) + "\n"
+            finally:
+                await _unregister_team_session(sessionId)
+                queue_lease.release()
+            return
+
         stdin_payload_current = stdin_payload
         compression_retried = False
-        yield json.dumps({"type": "session", "id": sessionId}) + "\n"
 
         try:
             while True:

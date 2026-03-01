@@ -89,7 +89,7 @@ docker run -d \
 	--label "${TEST_CONTAINER_LABEL}" \
 	-p "${SERVE_PORT}:8000" \
 	-v /var/run/docker.sock:/var/run/docker.sock \
-	-e AGENT_LIST="codex,bash" \
+	-e AGENT_LIST="codex,bash,team" \
 	-e AGENT_MODEL="auto,test-model-fast,test-model-fallback" \
 	-e CODEX_AGENT_IMAGE="${AGENT_IMAGE_TAG}" \
 	-e CODEX_INSIGHT_IMAGE="${INSIGHT_IMAGE_TAG}" \
@@ -156,7 +156,7 @@ import sys
 with open(sys.argv[1], "r", encoding="utf-8") as f:
 	data = json.load(f)
 
-expected = {"bash", "codex"}
+expected = {"bash", "codex", "team"}
 agents = data.get("agents")
 count = data.get("count")
 
@@ -240,6 +240,63 @@ if not exit_events:
 exit_code = exit_events[-1].get("code")
 if not isinstance(exit_code, int):
 	raise SystemExit(f"/agent/run exit code is not an integer: {exit_code}")
+PY
+
+echo "- Testing POST /agent/run in team mode"
+TEAM_RUN_BODY="${TMP_DIR}/team-run.ndjson"
+TEAM_RUN_PAYLOAD="${TMP_DIR}/team-run.json"
+
+cat > "${TEAM_RUN_PAYLOAD}" <<'JSON'
+{
+  "agent": "team",
+  "args": ["--version"],
+  "stdin": "Provide a concise plan to improve repository code quality over 3 milestones.",
+  "sessionId": "team-run-session"
+}
+JSON
+
+curl -sS -N -o "${TEAM_RUN_BODY}" \
+	-X POST "http://127.0.0.1:${SERVE_PORT}/agent/run" \
+	-H "Content-Type: application/json" \
+	--data-binary "@${TEAM_RUN_PAYLOAD}"
+
+python3 - "${TEAM_RUN_BODY}" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+events = []
+
+with open(path, "r", encoding="utf-8") as f:
+	for line in f:
+		line = line.strip()
+		if not line:
+			continue
+		events.append(json.loads(line))
+
+if not events:
+	raise SystemExit("/agent/run team test returned no NDJSON events")
+
+session_events = [e for e in events if e.get("type") == "session"]
+if not session_events:
+	raise SystemExit("/agent/run team response missing session event")
+
+if session_events[0].get("id") != "team-run-session":
+	raise SystemExit(f"/agent/run team session id mismatch: {session_events[0].get('id')}")
+
+stderr_text = "".join(e.get("data", "") for e in events if e.get("type") == "stderr")
+if "Team mode enabled" not in stderr_text:
+	raise SystemExit(f"/agent/run team response missing team marker, stderr={stderr_text!r}")
+
+if "[team/round1]" not in stderr_text:
+	raise SystemExit(f"/agent/run team response missing round1 marker, stderr={stderr_text!r}")
+
+exit_events = [e for e in events if e.get("type") == "exit"]
+if not exit_events:
+	raise SystemExit("/agent/run team response missing exit event")
+
+if not isinstance(exit_events[-1].get("code"), int):
+	raise SystemExit(f"/agent/run team exit code is invalid: {exit_events[-1]}")
 PY
 
 echo "- Testing POST /agent/run with --model auto resolution"

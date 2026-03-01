@@ -4,10 +4,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_URL="${BASE_URL:-http://localhost:8000}"
 SESSION_ID="demo-$(date +%s)"
+TEAM_SESSION_ID="demo-team-$(date +%s)"
 REPO_PATH="${REPO_PATH:-$(pwd)}"
 DRY_RUN="${DRY_RUN:-false}"
 LITELLM_SSL_VERIFY="${LITELLM_SSL_VERIFY:-false}"
 LITELLM_CA_BUNDLE="${LITELLM_CA_BUNDLE:-}"
+TEAM_AGENT="${TEAM_AGENT:-team}"
+TEAM_DEMO_ENABLED="${TEAM_DEMO_ENABLED:-true}"
 GRAPH_MODEL="${GRAPH_MODEL:-}"
 GRAPH_MAX_RETRIES="${GRAPH_MAX_RETRIES:-3}"
 GRAPH_RETRY_DELAY_SECONDS="${GRAPH_RETRY_DELAY_SECONDS:-10}"
@@ -107,6 +110,23 @@ curl -N -sS -X POST "${BASE_URL}/agent/run" \
   ]
 }
 EOF
+
+if [[ "${TEAM_DEMO_ENABLED}" =~ ^(1|true|yes|on)$ ]]; then
+  echo
+  echo "Testing POST ${BASE_URL}/agent/run in team mode with sessionId=${TEAM_SESSION_ID}"
+  echo "teamAgent=${TEAM_AGENT}"
+
+  curl -N -sS -X POST "${BASE_URL}/agent/run" \
+    -H "Content-Type: application/json" \
+    --data-binary @- <<EOF
+{
+  "agent": "${TEAM_AGENT}",
+  "args": ["--model", "auto"],
+  "stdin": "Analyze trade-offs for introducing strict static typing in a large legacy codebase and provide a practical phased rollout plan.",
+  "sessionId": "${TEAM_SESSION_ID}"
+}
+EOF
+fi
 
 if [[ "${DEMO_CONTEXT_OVERFLOW}" =~ ^(1|true|yes|on)$ ]]; then
   echo

@@ -18,6 +18,7 @@ HTTP server implementation for the Codex Gerrit plugin. This service exposes a R
 - Supports automatic message-history compression and one-time retry when `/agent/run` fails due to model context overflow.
 - Supports optional `contextFiles` in `POST /agent/run` to prepend referenced file contents into agent stdin context.
 - Each `contextFiles` item is a typed `ContextFileItem` object supporting `content` (plain text) or `base64Content` (base64-encoded bytes) for flexible file attachment, including binary and non-UTF-8 files.
+- Supports multi-agent collaborative orchestration when `agent: "team"` is requested and `team` is present in `AGENT_LIST`.
 
 ## Requirements
 
@@ -50,7 +51,7 @@ The server reads supported agents from `AGENT_LIST` (comma-separated). In local 
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AGENT_LIST` | `codex` | Supported agent names (comma-separated) |
+| `AGENT_LIST` | `codex` | Supported agent names (comma-separated). Include `team` to enable team orchestration mode for `POST /agent/run`; all non-`team` entries are used as specialist agents. |
 | `AGENT_MODEL` | *(empty)* | Returned model IDs for `GET /models` (comma-separated). Include `auto` to enable server-side auto selection for `POST /agent/run` when request args contain `--model auto`. |
 | `LITELLM_BASE_URL` | *(unset)* | Default LiteLLM base URL passed to execution container in Docker mode |
 | `LITELLM_API_KEY` | *(unset)* | Default LiteLLM API key passed to execution container in Docker mode |
@@ -249,6 +250,14 @@ Executes a agent command.
 `env` is optional. In Docker mode, `LITELLM_BASE_URL` and `LITELLM_API_KEY` are read from `codex.serve` process env by default.
 
 If `args` contains `--model auto` (or `-m auto`) and `AGENT_MODEL` includes `auto`, the server resolves `auto` to a concrete model from `AGENT_MODEL` (excluding `auto`) before execution.
+
+Team orchestration mode:
+- Triggered when request `agent` is `team` and `team` is included in `AGENT_LIST`.
+- `codex.serve` uses all agents in `AGENT_LIST` except `team` as specialist agents.
+- Round 1: all specialist agents run in parallel with role prompts (coordinator/research/logic/creative, repeated as needed).
+- Round 2: all specialist agents run in parallel again to critique and revise using peer outputs.
+- Final synthesis: the first specialist agent performs synthesis and returns one user-facing final answer.
+- Stream output includes orchestration status in `stderr` and final synthesized answer in `stdout`.
 
 `contextFiles` is optional:
 - Each item must include `path` and at least one of `content` or `base64Content`.
