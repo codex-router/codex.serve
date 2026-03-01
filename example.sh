@@ -268,9 +268,9 @@ import sys
 graph_model = sys.argv[1].strip()
 
 body = {
-  "code": "def run():\n    return 1",
-  "file_paths": ["app.py"],
-  "framework_hint": "python",
+  "code": "from openai import OpenAI\n\nclient = OpenAI()\n\ndef summarize(text):\n    if len(text) > 200:\n        prompt = 'Summarize this long text'\n    else:\n        prompt = 'Answer this short question'\n\n    response = client.chat.completions.create(\n        model='gpt-4o-mini',\n        messages=[\n            {'role': 'system', 'content': prompt},\n            {'role': 'user', 'content': text}\n        ]\n    )\n    return response.choices[0].message.content\n",
+  "file_paths": ["example/sample_workflow.py"],
+  "framework_hint": "openai",
 }
 
 env = {}

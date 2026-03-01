@@ -6,7 +6,7 @@ HTTP server implementation for the Codex Gerrit plugin. This service exposes a R
 
 - Exposes a `POST /agent/run` endpoint to execute agent commands.
 - Exposes a `POST /insight/run` endpoint to execute `codex-insight` Docker jobs and return generated insight pages.
-- Exposes a `POST /graph/run` endpoint to execute `codex.graph` CLI image directly with `main.py analyze` args.
+- Exposes a `POST /graph/run` endpoint to execute `codex.graph` CLI image using `analyze --request-json -` (stdin payload).
 - Supports in-memory request queueing with bounded pending requests and per-endpoint concurrency limits for `/agent/run`, `/insight/run`, and `/graph/run`.
 - Supports on-demand `docker run --rm -i` execution of `codex.graph` CLI image for each `/graph/run` request.
 - Exposes a `POST /sessions/{sessionId}/stop` endpoint to stop an active `/agent/run` session.
@@ -120,9 +120,9 @@ This configuration:
 - Mounts the host's Docker socket (`/var/run/docker.sock`) so it can spawn sibling containers.
 - Configures `CODEX_AGENT_IMAGE` to `craftslab/codex-agent:latest` for executing agents safely. The server container will spawn this image for each request.
 - Configures `CODEX_INSIGHT_IMAGE` to `craftslab/codex-insight:latest` for insight generation requests.
-- Uses `CODEX_GRAPH_IMAGE` (`craftslab/codex-graph-cli:latest`) for `POST /graph/run` with explicit CLI args:
-  - `analyze --code-file /tmp/code.txt --file-path <file> --framework-hint <hint> --pretty`
-  - The code is written to a temp file and mounted as `/tmp/code.txt`. All arguments are passed via CLI, not stdin. No `--request-json` is used.
+- Uses `CODEX_GRAPH_IMAGE` (`craftslab/codex-graph-cli:latest`) for `POST /graph/run` with stdin payload:
+  - `analyze --request-json - --pretty`
+  - Request fields (`code`, `file_paths`, `framework_hint`, optional `metadata`, optional `http_connections`) are serialized to JSON and passed via stdin.
 - Supports `GRAPH_MODEL` for `POST /graph/run` payload env forwarding as `LITELLM_MODEL`.
 - Supports `LITELLM_SSL_VERIFY` (default `false`) and optional `LITELLM_CA_BUNDLE` for LiteLLM/self-signed cert scenarios.
 - Sets `RUN_RESPONSE_TIMEOUT_SECONDS` in [docker-compose.yml](docker-compose.yml) (default `300`) to bound `POST /agent/run` response time in container deployments.
@@ -157,7 +157,7 @@ BASE_URL="http://localhost:8000" ./example.sh
 
 The script sends `POST /agent/run` with:
 - `agent: "codex"`
-- `args: ["--model", "ollama-kimi-k2.5"]`
+- `args: ["--model", "auto"]`
 - one text `contextFiles` item (`content`) and one base64 item (`base64Content`)
 - a generated `sessionId` in the form `demo-<timestamp>`
 
@@ -175,6 +175,9 @@ Supported overrides:
 
 Expected output is NDJSON containing `session`, streamed `stdout`/`stderr`, and a final `exit` object.
 If response timeout is configured server-side and reached, the stream may end with `{"type":"exit","code":124}`.
+
+For `POST /graph/run`, success returns JSON containing `graph`, `usage`, and `cost`.
+A minimal smoke-test payload may return an empty graph (`nodes: []`, `edges: []`) while still indicating a successful end-to-end execution.
 
 ## API
 

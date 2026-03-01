@@ -1402,22 +1402,25 @@ async def run_graph(req: GraphRunRequest):
     queue_lease = await GRAPH_REQUEST_QUEUE.acquire()
     try:
         code = (req.code or "").strip()
-        file_paths = req.file_paths or []
+        file_paths = [item.strip() for item in (req.file_paths or []) if (item or "").strip()]
 
         if not code:
             raise HTTPException(status_code=400, detail="code is required")
         if not file_paths:
             raise HTTPException(status_code=400, detail="file_paths is required")
 
-        # Write code to a temp file for mounting (ensure file, not directory)
-        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt") as code_file:
-            code_file.write(code)
-            code_file.flush()
-            os.fsync(code_file.fileno())
-            code_file_path = code_file.name
-
         framework_hint = (req.framework_hint or "").strip() or (_infer_framework_hint(file_paths) or "")
-        file_path = file_paths[0] if file_paths else "code.txt"
+        analyze_payload: Dict[str, Any] = {
+            "code": code,
+            "file_paths": file_paths,
+        }
+        if framework_hint:
+            analyze_payload["framework_hint"] = framework_hint
+        if req.metadata is not None:
+            analyze_payload["metadata"] = req.metadata
+        if req.http_connections is not None:
+            analyze_payload["http_connections"] = req.http_connections
+        analyze_payload_json = json.dumps(analyze_payload, ensure_ascii=False)
 
         graph_env: Dict[str, str] = {}
         for env_key in ("LITELLM_BASE_URL", "LITELLM_API_KEY", "LITELLM_SSL_VERIFY", "LITELLM_CA_BUNDLE"):
@@ -1446,22 +1449,18 @@ async def run_graph(req: GraphRunRequest):
         max_attempts = GRAPH_ANALYZE_MAX_RETRIES + 1
         for attempt in range(1, max_attempts + 1):
             try:
-                # Ensure the mount target is a file, not a directory
-                # Workaround: mount to a unique filename and use that in CLI args
-                container_code_path = f"/tmp/code-{os.path.basename(code_file_path)}"
-                graph_command = ["docker", "run", "--rm", "-v", f"{code_file_path}:{container_code_path}:ro"]
+                graph_command = ["docker", "run", "--rm", "-i"]
                 for env_key, env_val in graph_env.items():
                     graph_command.extend(["-e", f"{env_key}={env_val}"])
                 graph_command.append(CODEX_GRAPH_IMAGE)
                 graph_command.extend([
                     "analyze",
-                    "--code-file", container_code_path,
-                    "--file-path", file_path,
-                    "--framework-hint", framework_hint,
+                    "--request-json", "-",
                     "--pretty",
                 ])
-                response_code, response_body, response_stderr = await _run_subprocess_capture(
+                response_code, response_body, response_stderr = await _run_subprocess_capture_with_stdin(
                     graph_command,
+                    stdin_text=analyze_payload_json,
                     timeout=GRAPH_RESPONSE_TIMEOUT_SECONDS,
                     timeout_message=timeout_message,
                 )
@@ -1505,10 +1504,6 @@ async def run_graph(req: GraphRunRequest):
         )
     finally:
         queue_lease.release()
-        try:
-            os.unlink(code_file_path)
-        except Exception:
-            pass
 
 @app.post("/agent/run")
 async def run_agent(req: RunRequest):
