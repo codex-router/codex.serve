@@ -32,3 +32,5 @@ services:
       - INSIGHT_RESPONSE_TIMEOUT_SECONDS=${INSIGHT_RESPONSE_TIMEOUT_SECONDS:-1200}
       # /graph/run response timeout in seconds (0 or empty disables timeout)
       - GRAPH_RESPONSE_TIMEOUT_SECONDS=${GRAPH_RESPONSE_TIMEOUT_SECONDS:-1200}
+      # codex.sandbox piston API used by /sandbox/run
+      - SANDBOX_BASE_URL=${SANDBOX_BASE_URL:-http://host.docker.internal:2000}

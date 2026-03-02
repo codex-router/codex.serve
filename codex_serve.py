@@ -11,6 +11,7 @@ import urllib.parse
 import socket
 import ssl
 import math
+import shlex
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 from uuid import uuid4
@@ -228,7 +229,13 @@ SANDBOX_MAX_CONCURRENT_REQUESTS = _parse_non_negative_int(
     2,
 )
 
-SANDBOX_RUNTIME_BIN = (os.environ.get("SANDBOX_RUNTIME_BIN") or "srt").strip() or "srt"
+def _default_sandbox_base_url() -> str:
+    if os.path.exists("/.dockerenv"):
+        return "http://host.docker.internal:2000"
+    return "http://localhost:2000"
+
+
+SANDBOX_BASE_URL = (os.environ.get("SANDBOX_BASE_URL") or _default_sandbox_base_url()).rstrip("/")
 SANDBOX_RUN_TIMEOUT_SECONDS = (
     _parse_response_timeout_seconds(os.environ.get("SANDBOX_RUN_TIMEOUT_SECONDS")) or 60.0
 )
@@ -1391,6 +1398,23 @@ def _normalize_graph_upstream_error(status_code: int, response_body: str) -> str
     return normalized
 
 
+def _build_sandbox_script(command_text: str, cwd_value: Optional[str], env_map: Dict[str, str]) -> str:
+    lines: List[str] = ["#!/usr/bin/env bash", "set -euo pipefail"]
+
+    if cwd_value:
+        lines.append(f"cd {shlex.quote(cwd_value)}")
+
+    for key in sorted(env_map.keys()):
+        normalized_key = (key or "").strip()
+        if not normalized_key:
+            continue
+        value = env_map[key]
+        lines.append(f"export {normalized_key}={shlex.quote(value)}")
+
+    lines.append(command_text)
+    return "\n".join(lines) + "\n"
+
+
 def _infer_framework_hint(file_paths: List[str]) -> Optional[str]:
     extension_to_framework = {
         "py": "python",
@@ -1836,41 +1860,46 @@ async def run_sandbox(req: SandboxRunRequest):
             raise HTTPException(status_code=400, detail="command is required")
 
         cwd_value = (req.cwd or "").strip() or None
-        settings_path = (req.settingsPath or "").strip()
-
         timeout_seconds = req.timeoutSeconds
         if timeout_seconds is None or timeout_seconds <= 0:
             timeout_seconds = SANDBOX_RUN_TIMEOUT_SECONDS
 
-        sandbox_command = [SANDBOX_RUNTIME_BIN]
-        if settings_path:
-            sandbox_command.extend(["--settings", settings_path])
-        sandbox_command.append(command_text)
-
-        popen_env = os.environ.copy()
+        requested_env: Dict[str, str] = {}
         if req.env:
             for key, value in req.env.items():
                 normalized_key = (key or "").strip()
                 if not normalized_key:
                     continue
-                popen_env[normalized_key] = "" if value is None else str(value)
+                requested_env[normalized_key] = "" if value is None else str(value)
+
+        script_content = _build_sandbox_script(command_text, cwd_value, requested_env)
+        timeout_ms = max(1, int(math.ceil(timeout_seconds * 1000.0)))
+
+        payload = {
+            "language": "bash",
+            "version": "*",
+            "files": [
+                {
+                    "name": "main.sh",
+                    "content": script_content,
+                }
+            ],
+            "stdin": "",
+            "compile_timeout": timeout_ms,
+            "run_timeout": timeout_ms,
+            "compile_cpu_time": timeout_ms,
+            "run_cpu_time": timeout_ms,
+        }
+
+        upstream_url = f"{SANDBOX_BASE_URL}/api/v2/execute"
 
         try:
-            exit_code, stdout_text, stderr_text = await _run_subprocess_capture(
-                sandbox_command,
-                timeout=timeout_seconds,
-                cwd=cwd_value,
-                env=popen_env,
-            )
-            return SandboxRunResponse(
-                stdout=stdout_text,
-                stderr=stderr_text,
-                exit_code=exit_code,
-                command=command_text,
-                timed_out=False,
+            status_code, response_body = await _post_json(
+                upstream_url,
+                payload,
                 timeout_seconds=timeout_seconds,
             )
-        except asyncio.TimeoutError:
+        except (TimeoutError, socket.timeout):
             return SandboxRunResponse(
                 stdout="",
                 stderr=(
@@ -1882,6 +1911,52 @@ async def run_sandbox(req: SandboxRunRequest):
                 timed_out=True,
                 timeout_seconds=timeout_seconds,
             )
+
+        if not (200 <= status_code < 300):
+            detail = _normalize_graph_upstream_error(status_code, response_body)
+            raise HTTPException(
+                status_code=502,
+                detail=f"codex-sandbox request failed: {detail}",
+            )
+
+        try:
+            parsed = json.loads(response_body) if response_body.strip() else {}
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=502, detail="Invalid JSON response from codex-sandbox") from exc
+
+        run_result = parsed.get("run") if isinstance(parsed, dict) else None
+        if not isinstance(run_result, dict):
+            raise HTTPException(status_code=502, detail="Invalid /execute response from codex-sandbox: missing run")
+
+        stdout_text = str(run_result.get("stdout") or "")
+        stderr_text = str(run_result.get("stderr") or "")
+
+        run_status = str(run_result.get("status") or "")
+        run_message = str(run_result.get("message") or "")
+        timed_out = run_status == "TO"
+
+        code_value = run_result.get("code")
+        if isinstance(code_value, int):
+            exit_code = code_value
+        elif timed_out:
+            exit_code = 124
+        else:
+            exit_code = 1
+
+        if run_message:
+            if stderr_text:
+                stderr_text = f"{stderr_text.rstrip()}\n{run_message}".strip()
+            else:
+                stderr_text = run_message
+
+        return SandboxRunResponse(
+            stdout=stdout_text,
+            stderr=stderr_text,
+            exit_code=exit_code,
+            command=command_text,
+            timed_out=timed_out,
+            timeout_seconds=timeout_seconds,
+        )
     finally:
         queue_lease.release()
 

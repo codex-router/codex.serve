@@ -22,6 +22,7 @@ QUEUE_RETRY_DELAY_SECONDS="${QUEUE_RETRY_DELAY_SECONDS:-3}"
 DEMO_CONTEXT_OVERFLOW="${DEMO_CONTEXT_OVERFLOW:-false}"
 SANDBOX_DEMO_ENABLED="${SANDBOX_DEMO_ENABLED:-true}"
 SANDBOX_COMMAND="${SANDBOX_COMMAND:-echo hello-from-sandbox}"
+SANDBOX_BASE_URL="${SANDBOX_BASE_URL:-http://localhost:2000}"
 RUN_DATE="$(date +%Y%m%d-%H%M%S)"
 OUT_PATH="${OUT_PATH:-/tmp/codex-serve-example-out-${RUN_DATE}}"
 
@@ -91,6 +92,42 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "${OUT_PATH}"
+
+ensure_sandbox_bash_runtime() {
+  local runtimes_response install_status install_body
+
+  if ! runtimes_response="$(curl -sS -f "${SANDBOX_BASE_URL}/api/v2/runtimes" 2>/dev/null)"; then
+    echo "warning: unable to query ${SANDBOX_BASE_URL}/api/v2/runtimes; skipping runtime preflight"
+    return 0
+  fi
+
+  if grep -q '"language":"bash"' <<<"${runtimes_response}"; then
+    echo "sandbox runtime preflight: bash is already installed"
+    return 0
+  fi
+
+  echo "sandbox runtime preflight: installing bash runtime via ${SANDBOX_BASE_URL}/api/v2/packages"
+  install_body="$(mktemp)"
+  install_status="$(curl -sS -o "${install_body}" -w "%{http_code}" -X POST "${SANDBOX_BASE_URL}/api/v2/packages" \
+    -H "Content-Type: application/json" \
+    --data-binary '{"language":"bash","version":"*"}' || true)"
+
+  if [[ "${install_status}" == "200" ]]; then
+    echo "sandbox runtime preflight: bash runtime installed"
+    rm -f "${install_body}"
+    return 0
+  fi
+
+  if [[ "${install_status}" == "500" ]] && grep -qi "Already installed" "${install_body}"; then
+    echo "sandbox runtime preflight: bash runtime already installed"
+    rm -f "${install_body}"
+    return 0
+  fi
+
+  echo "warning: failed to install bash runtime (HTTP ${install_status})"
+  cat "${install_body}" || true
+  rm -f "${install_body}"
+}
 
 echo "Testing POST ${BASE_URL}/agent/run with sessionId=${SESSION_ID}"
 echo "Expect NDJSON stream with: session/stdout|stderr/exit"
@@ -364,6 +401,9 @@ if [[ "${SANDBOX_DEMO_ENABLED}" =~ ^(1|true|yes|on)$ ]]; then
   echo
   echo "Testing POST ${BASE_URL}/sandbox/run"
   echo "sandboxCommand=${SANDBOX_COMMAND}"
+  echo "sandboxBaseUrl=${SANDBOX_BASE_URL}"
+
+  ensure_sandbox_bash_runtime
 
   python3 - "${SANDBOX_COMMAND}" > "${SANDBOX_PAYLOAD}" <<'PY'
 import json

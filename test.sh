@@ -11,6 +11,9 @@ AGENT_IMAGE_TAG="codex-agent:test"
 INSIGHT_IMAGE_TAG="codex-insight:test"
 SERVE_IMAGE_TAG="codex-serve:test"
 SERVE_CONTAINER_NAME="codex-serve-test"
+SANDBOX_IMAGE_TAG="craftslab/codex-sandbox:latest"
+SANDBOX_CONTAINER_NAME="codex-sandbox-test"
+SANDBOX_PORT="2000"
 GRAPH_CONTAINER_NAME="codex-graph-test"
 GRAPH_DEFAULT_CONTAINER_NAME="codex-graph-backend"
 SERVE_PORT="18000"
@@ -43,14 +46,15 @@ cleanup() {
 
 	docker rm -f "${GRAPH_CONTAINER_NAME}" >/dev/null 2>&1 || true
 	docker rm -f "${GRAPH_DEFAULT_CONTAINER_NAME}" >/dev/null 2>&1 || true
+	docker rm -f "${SANDBOX_CONTAINER_NAME}" >/dev/null 2>&1 || true
 	docker rm -f "${SERVE_CONTAINER_NAME}" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
-echo "[1/6] Building agent Docker image from codex.agent: ${AGENT_IMAGE_TAG}"
+echo "[1/7] Building agent Docker image from codex.agent: ${AGENT_IMAGE_TAG}"
 docker build -t "${AGENT_IMAGE_TAG}" -f "${AGENT_DIR}/Dockerfile" "${AGENT_DIR}"
 
-echo "[2/6] Running agent image smoke tests in container"
+echo "[2/7] Running agent image smoke tests in container"
 docker run --rm "${AGENT_IMAGE_TAG}" bash -lc '
 set -euo pipefail
 
@@ -77,16 +81,61 @@ done
 echo "Agent image smoke tests passed."
 '
 
-echo "[3/6] Building codex-insight Docker image: ${INSIGHT_IMAGE_TAG}"
+echo "[3/7] Building codex-insight Docker image: ${INSIGHT_IMAGE_TAG}"
 docker build -t "${INSIGHT_IMAGE_TAG}" -f "${INSIGHT_DIR}/Dockerfile" "${INSIGHT_DIR}"
 
-echo "[4/6] Building codex.serve Docker image: ${SERVE_IMAGE_TAG}"
+echo "[4/7] Building codex.serve Docker image: ${SERVE_IMAGE_TAG}"
 docker build -t "${SERVE_IMAGE_TAG}" -f "${SCRIPT_DIR}/Dockerfile" "${SCRIPT_DIR}"
 
-echo "[5/6] Running codex.serve with CODEX_AGENT_IMAGE=${AGENT_IMAGE_TAG} and CODEX_INSIGHT_IMAGE=${INSIGHT_IMAGE_TAG}"
+echo "[5/7] Starting codex-sandbox container: ${SANDBOX_IMAGE_TAG}"
+docker run -d \
+	--name "${SANDBOX_CONTAINER_NAME}" \
+	--label "${TEST_CONTAINER_LABEL}" \
+	--privileged \
+	--tmpfs /tmp:exec \
+	-p "${SANDBOX_PORT}:2000" \
+	"${SANDBOX_IMAGE_TAG}" >/dev/null
+
+echo "- Waiting for codex-sandbox readiness..."
+sandbox_ready=0
+for _ in $(seq 1 60); do
+	if curl -fsS -o /dev/null "http://127.0.0.1:${SANDBOX_PORT}/api/v2/runtimes" 2>/dev/null; then
+		sandbox_ready=1
+		break
+	fi
+	sleep 1
+done
+
+if [ "${sandbox_ready}" -ne 1 ]; then
+	echo "codex-sandbox did not become ready in time."
+	docker logs "${SANDBOX_CONTAINER_NAME}" || true
+	exit 1
+fi
+
+echo "- Ensuring bash runtime is installed in codex-sandbox"
+SANDBOX_INSTALL_BODY="$(mktemp)"
+SANDBOX_INSTALL_STATUS="$(curl -sS -o "${SANDBOX_INSTALL_BODY}" -w "%{http_code}" \
+	-X POST "http://127.0.0.1:${SANDBOX_PORT}/api/v2/packages" \
+	-H "Content-Type: application/json" \
+	--data-binary '{"language":"bash","version":"*"}')"
+
+if [ "${SANDBOX_INSTALL_STATUS}" != "200" ]; then
+	if [ "${SANDBOX_INSTALL_STATUS}" = "500" ] && grep -qi "Already installed" "${SANDBOX_INSTALL_BODY}"; then
+		echo "- bash runtime already installed"
+	else
+		echo "Failed to install bash runtime in codex-sandbox (HTTP ${SANDBOX_INSTALL_STATUS})"
+		cat "${SANDBOX_INSTALL_BODY}"
+		rm -f "${SANDBOX_INSTALL_BODY}"
+		exit 1
+	fi
+fi
+rm -f "${SANDBOX_INSTALL_BODY}"
+
+echo "[6/7] Running codex.serve with CODEX_AGENT_IMAGE=${AGENT_IMAGE_TAG} and CODEX_INSIGHT_IMAGE=${INSIGHT_IMAGE_TAG}"
 docker run -d \
 	--name "${SERVE_CONTAINER_NAME}" \
 	--label "${TEST_CONTAINER_LABEL}" \
+	--add-host host.docker.internal:host-gateway \
 	-p "${SERVE_PORT}:8000" \
 	-v /var/run/docker.sock:/var/run/docker.sock \
 	-e AGENT_LIST="codex,bash,team" \
@@ -111,7 +160,7 @@ docker run -d \
 	-e LITELLM_API_KEY="test-api-key" \
 	-e LITELLM_SSL_VERIFY="false" \
 	-e LITELLM_CA_BUNDLE="" \
-	-e SANDBOX_RUNTIME_BIN="echo" \
+	-e SANDBOX_BASE_URL="http://host.docker.internal:${SANDBOX_PORT}" \
 	"${SERVE_IMAGE_TAG}" >/dev/null
 
 echo "- Waiting for codex.serve readiness..."
@@ -130,7 +179,7 @@ if [ "${ready}" -ne 1 ]; then
 	exit 1
 fi
 
-echo "[6/6] Testing codex.serve APIs (/agents, /models, /sandbox/run, /agent/run, /insight/run, /graph/run)"
+echo "[7/7] Testing codex.serve APIs (/agents, /models, /sandbox/run, /agent/run, /insight/run, /graph/run)"
 TMP_DIR="$(mktemp -d)"
 AGENTS_BODY="${TMP_DIR}/agents.json"
 MODELS_BODY="${TMP_DIR}/models.json"
