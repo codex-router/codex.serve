@@ -23,6 +23,7 @@ DEMO_CONTEXT_OVERFLOW="${DEMO_CONTEXT_OVERFLOW:-false}"
 SANDBOX_DEMO_ENABLED="${SANDBOX_DEMO_ENABLED:-true}"
 SANDBOX_COMMAND="${SANDBOX_COMMAND:-echo hello-from-sandbox}"
 SANDBOX_BASE_URL="${SANDBOX_BASE_URL:-http://localhost:2000}"
+SANDBOX_TIMEOUT_SECONDS="${SANDBOX_TIMEOUT_SECONDS:-3}"
 RUN_DATE="$(date +%Y%m%d-%H%M%S)"
 OUT_PATH="${OUT_PATH:-/tmp/codex-serve-example-out-${RUN_DATE}}"
 
@@ -402,18 +403,31 @@ if [[ "${SANDBOX_DEMO_ENABLED}" =~ ^(1|true|yes|on)$ ]]; then
   echo "Testing POST ${BASE_URL}/sandbox/run"
   echo "sandboxCommand=${SANDBOX_COMMAND}"
   echo "sandboxBaseUrl=${SANDBOX_BASE_URL}"
+  echo "sandboxTimeoutSeconds=${SANDBOX_TIMEOUT_SECONDS} (capped to 3 for codex-sandbox runtime limits)"
 
   ensure_sandbox_bash_runtime
 
-  python3 - "${SANDBOX_COMMAND}" > "${SANDBOX_PAYLOAD}" <<'PY'
+  python3 - "${SANDBOX_COMMAND}" "${SANDBOX_TIMEOUT_SECONDS}" > "${SANDBOX_PAYLOAD}" <<'PY'
 import json
 import sys
 
 command = sys.argv[1]
+timeout_raw = sys.argv[2]
+
+try:
+  timeout_seconds = float(timeout_raw)
+except Exception:
+  timeout_seconds = 3.0
+
+if timeout_seconds <= 0:
+  timeout_seconds = 3.0
+
+if timeout_seconds > 3.0:
+  timeout_seconds = 3.0
 
 payload = {
   "command": command,
-  "timeoutSeconds": 30,
+  "timeoutSeconds": timeout_seconds,
 }
 
 print(json.dumps(payload))
@@ -426,10 +440,35 @@ PY
     -w "%{http_code}")"
 
   if [[ "${sandbox_status_code}" -ge 200 && "${sandbox_status_code}" -lt 300 ]]; then
-    cat "${SANDBOX_RESPONSE}"
+    python3 - "${SANDBOX_RESPONSE}" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8") as f:
+    data = json.load(f)
+
+exit_code = data.get("exit_code")
+timed_out = bool(data.get("timed_out"))
+stdout_text = data.get("stdout", "")
+stderr_text = data.get("stderr", "")
+
+if exit_code == 0 and not timed_out:
+    print("sandbox/run: PASS")
+    stdout_one_line = (stdout_text or "").strip().replace("\n", "\\n")
+    if stdout_one_line:
+        print(f"sandbox/stdout: {stdout_one_line}")
+    else:
+        print("sandbox/stdout: <empty>")
+else:
+    print("sandbox/run: FAIL")
+    print(json.dumps(data, ensure_ascii=False))
+    sys.exit(1)
+PY
   else
     echo "sandbox/run returned HTTP ${sandbox_status_code}."
     cat "${SANDBOX_RESPONSE}"
+    exit 1
   fi
 fi
 
