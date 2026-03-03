@@ -236,6 +236,39 @@ def _default_sandbox_base_url() -> str:
 
 
 SANDBOX_BASE_URL = (os.environ.get("SANDBOX_BASE_URL") or _default_sandbox_base_url()).rstrip("/")
+
+
+def _build_sandbox_base_url_candidates(base_url: str) -> List[str]:
+    candidates: List[str] = []
+    normalized = (base_url or "").strip().rstrip("/")
+    if normalized:
+        candidates.append(normalized)
+
+    if normalized:
+        try:
+            parsed = urllib.parse.urlparse(normalized)
+            host = (parsed.hostname or "").lower()
+            alt_host: Optional[str] = None
+
+            if os.path.exists("/.dockerenv"):
+                if host in {"localhost", "127.0.0.1", "::1"}:
+                    alt_host = "host.docker.internal"
+                elif host == "host.docker.internal":
+                    alt_host = "localhost"
+
+            if alt_host:
+                replacement = f"[{alt_host}]" if host == "::1" else alt_host
+                alt_netloc = parsed.netloc.replace(parsed.hostname, replacement)
+                alternative = urllib.parse.urlunparse(parsed._replace(netloc=alt_netloc)).rstrip("/")
+                if alternative and alternative not in candidates:
+                    candidates.append(alternative)
+        except Exception:
+            pass
+
+    return candidates
+
+
+SANDBOX_BASE_URL_CANDIDATES = _build_sandbox_base_url_candidates(SANDBOX_BASE_URL)
 SANDBOX_RUN_TIMEOUT_SECONDS = (
     _parse_response_timeout_seconds(os.environ.get("SANDBOX_RUN_TIMEOUT_SECONDS")) or 60.0
 )
@@ -1891,71 +1924,104 @@ async def run_sandbox(req: SandboxRunRequest):
             "run_cpu_time": timeout_ms,
         }
 
-        upstream_url = f"{SANDBOX_BASE_URL}/api/v2/execute"
+        last_status_code: Optional[int] = None
+        last_response_body = ""
+        connection_errors: List[str] = []
 
-        try:
-            status_code, response_body = await _post_json(
-                upstream_url,
-                payload,
-                timeout_seconds=timeout_seconds,
-            )
-        except (TimeoutError, socket.timeout):
+        for sandbox_base_url in SANDBOX_BASE_URL_CANDIDATES:
+            upstream_url = f"{sandbox_base_url}/api/v2/execute"
+
+            try:
+                status_code, response_body = await _post_json(
+                    upstream_url,
+                    payload,
+                    timeout_seconds=timeout_seconds,
+                )
+                last_status_code = status_code
+                last_response_body = response_body
+            except (TimeoutError, socket.timeout):
+                return SandboxRunResponse(
+                    stdout="",
+                    stderr=(
+                        "Request timed out while waiting for sandbox response "
+                        f"({timeout_seconds}s)."
+                    ),
+                    exit_code=124,
+                    command=command_text,
+                    timed_out=True,
+                    timeout_seconds=timeout_seconds,
+                )
+            except urllib.error.URLError as exc:
+                reason = getattr(exc, "reason", exc)
+                connection_errors.append(f"{upstream_url}: {reason}")
+                continue
+
+            if not (200 <= status_code < 300):
+                detail = _normalize_graph_upstream_error(status_code, response_body)
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"codex-sandbox request failed: {detail}",
+                )
+
+            try:
+                parsed = json.loads(response_body) if response_body.strip() else {}
+            except json.JSONDecodeError as exc:
+                raise HTTPException(status_code=502, detail="Invalid JSON response from codex-sandbox") from exc
+
+            run_result = parsed.get("run") if isinstance(parsed, dict) else None
+            if not isinstance(run_result, dict):
+                raise HTTPException(status_code=502, detail="Invalid /execute response from codex-sandbox: missing run")
+
+            stdout_text = str(run_result.get("stdout") or "")
+            stderr_text = str(run_result.get("stderr") or "")
+
+            run_status = str(run_result.get("status") or "")
+            run_message = str(run_result.get("message") or "")
+            timed_out = run_status == "TO"
+
+            code_value = run_result.get("code")
+            if isinstance(code_value, int):
+                exit_code = code_value
+            elif timed_out:
+                exit_code = 124
+            else:
+                exit_code = 1
+
+            if run_message:
+                if stderr_text:
+                    stderr_text = f"{stderr_text.rstrip()}\n{run_message}".strip()
+                else:
+                    stderr_text = run_message
+
             return SandboxRunResponse(
-                stdout="",
-                stderr=(
-                    "Request timed out while waiting for sandbox response "
-                    f"({timeout_seconds}s)."
-                ),
-                exit_code=124,
+                stdout=stdout_text,
+                stderr=stderr_text,
+                exit_code=exit_code,
                 command=command_text,
-                timed_out=True,
+                timed_out=timed_out,
                 timeout_seconds=timeout_seconds,
             )
 
-        if not (200 <= status_code < 300):
-            detail = _normalize_graph_upstream_error(status_code, response_body)
+        if connection_errors:
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    "codex-sandbox connection failed. "
+                    + " ; ".join(connection_errors)
+                    + " ; set SANDBOX_BASE_URL to a reachable codex-sandbox endpoint."
+                ),
+            )
+
+        if last_status_code is not None:
+            detail = _normalize_graph_upstream_error(last_status_code, last_response_body)
             raise HTTPException(
                 status_code=502,
                 detail=f"codex-sandbox request failed: {detail}",
             )
 
-        try:
-            parsed = json.loads(response_body) if response_body.strip() else {}
-        except json.JSONDecodeError as exc:
-            raise HTTPException(status_code=502, detail="Invalid JSON response from codex-sandbox") from exc
-
-        run_result = parsed.get("run") if isinstance(parsed, dict) else None
-        if not isinstance(run_result, dict):
-            raise HTTPException(status_code=502, detail="Invalid /execute response from codex-sandbox: missing run")
-
-        stdout_text = str(run_result.get("stdout") or "")
-        stderr_text = str(run_result.get("stderr") or "")
-
-        run_status = str(run_result.get("status") or "")
-        run_message = str(run_result.get("message") or "")
-        timed_out = run_status == "TO"
-
-        code_value = run_result.get("code")
-        if isinstance(code_value, int):
-            exit_code = code_value
-        elif timed_out:
-            exit_code = 124
-        else:
-            exit_code = 1
-
-        if run_message:
-            if stderr_text:
-                stderr_text = f"{stderr_text.rstrip()}\n{run_message}".strip()
-            else:
-                stderr_text = run_message
-
-        return SandboxRunResponse(
-            stdout=stdout_text,
-            stderr=stderr_text,
-            exit_code=exit_code,
-            command=command_text,
-            timed_out=timed_out,
-            timeout_seconds=timeout_seconds,
+        raise HTTPException(
+            status_code=502,
+            detail="codex-sandbox request failed: no reachable upstream endpoints",
         )
     finally:
         queue_lease.release()
