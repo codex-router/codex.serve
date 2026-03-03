@@ -261,7 +261,7 @@ echo "- Testing POST /sandbox/run"
 SANDBOX_STATUS="$(curl -sS -o "${SANDBOX_RUN_BODY}" -w "%{http_code}" \
 	-X POST "http://127.0.0.1:${SERVE_PORT}/sandbox/run" \
 	-H "Content-Type: application/json" \
-	-d '{"command":"sandbox-smoke-ok","timeoutSeconds":15}')"
+	-d '{"command":"echo sandbox-smoke-ok","timeoutSeconds":15}')"
 
 if [ "${SANDBOX_STATUS}" != "200" ]; then
 	echo "Expected HTTP 200 from /sandbox/run, got ${SANDBOX_STATUS}"
@@ -276,7 +276,7 @@ import sys
 with open(sys.argv[1], "r", encoding="utf-8") as f:
 	data = json.load(f)
 
-if data.get("command") != "sandbox-smoke-ok":
+if data.get("command") != "echo sandbox-smoke-ok":
 	raise SystemExit(f"/sandbox/run command mismatch: {data}")
 
 if data.get("exit_code") != 0:
