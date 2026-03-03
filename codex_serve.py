@@ -290,6 +290,9 @@ SANDBOX_BASE_URL_CANDIDATES = _build_sandbox_base_url_candidates(SANDBOX_BASE_UR
 SANDBOX_RUN_TIMEOUT_SECONDS = (
     _parse_response_timeout_seconds(os.environ.get("SANDBOX_RUN_TIMEOUT_SECONDS")) or 60.0
 )
+SANDBOX_HARD_TIMEOUT_SECONDS = (
+    _parse_response_timeout_seconds(os.environ.get("SANDBOX_HARD_TIMEOUT_SECONDS")) or 3.0
+)
 
 AUTO_COMPRESS_ON_CONTEXT_OVERFLOW = (
     (os.environ.get("AUTO_COMPRESS_ON_CONTEXT_OVERFLOW") or "true").strip().lower()
@@ -1957,9 +1960,18 @@ async def run_sandbox(req: SandboxRunRequest):
             raise HTTPException(status_code=400, detail="command is required")
 
         cwd_value = (req.cwd or "").strip() or None
-        timeout_seconds = req.timeoutSeconds
+        requested_timeout_seconds = req.timeoutSeconds
+        timeout_seconds = requested_timeout_seconds
         if timeout_seconds is None or timeout_seconds <= 0:
             timeout_seconds = SANDBOX_RUN_TIMEOUT_SECONDS
+
+        if SANDBOX_HARD_TIMEOUT_SECONDS > 0 and timeout_seconds > SANDBOX_HARD_TIMEOUT_SECONDS:
+            logger.info(
+                "sandbox.run timeout capped: requested=%s effective=%s",
+                timeout_seconds,
+                SANDBOX_HARD_TIMEOUT_SECONDS,
+            )
+            timeout_seconds = SANDBOX_HARD_TIMEOUT_SECONDS
 
         requested_env: Dict[str, str] = {}
         if req.env:
@@ -1989,7 +2001,8 @@ async def run_sandbox(req: SandboxRunRequest):
         }
 
         logger.info(
-            "sandbox.run request: timeout_seconds=%s cwd=%s candidates=%s command_preview=%s",
+            "sandbox.run request: requested_timeout_seconds=%s timeout_seconds=%s cwd=%s candidates=%s command_preview=%s",
+            requested_timeout_seconds,
             timeout_seconds,
             cwd_value,
             SANDBOX_BASE_URL_CANDIDATES,

@@ -68,6 +68,7 @@ The server reads supported agents from `AGENT_LIST` (comma-separated). In local 
 | `GRAPH_RESPONSE_TIMEOUT_SECONDS` | *(unset)* | Optional timeout (seconds) for `POST /graph/run`; `<= 0`, empty, or invalid disables timeout |
 | `SANDBOX_BASE_URL` | `http://localhost:2000` (or `http://codex-sandbox:2000` in Docker Compose) | Base URL for codex-sandbox API used by `POST /sandbox/run` |
 | `SANDBOX_RUN_TIMEOUT_SECONDS` | `60` | Default timeout (seconds) for `POST /sandbox/run` when request timeout is omitted or invalid |
+| `SANDBOX_HARD_TIMEOUT_SECONDS` | `3` | Hard upper bound (seconds) applied to `POST /sandbox/run` timeout to keep requests within codex-sandbox runtime limits |
 | `REQUEST_QUEUE_MAX_PENDING` | `100` | Max pending requests allowed per queued API before returning `503` |
 | `REQUEST_QUEUE_WAIT_TIMEOUT_SECONDS` | *(unset)* | Optional max wait time in queue before returning `503`; empty/invalid/`<= 0` disables queue wait timeout |
 | `AGENT_MAX_CONCURRENT_REQUESTS` | `4` | Max concurrently executing requests for `POST /agent/run` |
@@ -451,6 +452,7 @@ Runs a command using sandbox-runtime wrapper executable (default `srt`).
 - `command` is required.
 - `cwd`, `settingsPath`, `timeoutSeconds`, and `env` are optional.
 - If `timeoutSeconds` is omitted/invalid, `SANDBOX_RUN_TIMEOUT_SECONDS` is used.
+- Effective timeout is capped by `SANDBOX_HARD_TIMEOUT_SECONDS` (default `3`).
 
 **Response:**
 

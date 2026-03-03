@@ -23,6 +23,8 @@ services:
       - AGENT_MODEL=auto,ollama-kimi-k2.5,ollama-minimax-m2.5,ollama-qwen3-coder
       - INSIGHT_MODEL=ollama-gemini-3-flash-preview
       - GRAPH_MODEL=ollama-gemini-3-flash-preview
+      # codex.sandbox piston API used by /sandbox/run
+      - SANDBOX_BASE_URL=${SANDBOX_BASE_URL:-http://codex-sandbox:2000}
       # LiteLLM endpoint and credentials
       - LITELLM_BASE_URL=${LITELLM_BASE_URL}
       - LITELLM_API_KEY=${LITELLM_API_KEY}
@@ -34,8 +36,8 @@ services:
       - INSIGHT_RESPONSE_TIMEOUT_SECONDS=${INSIGHT_RESPONSE_TIMEOUT_SECONDS:-1200}
       # /graph/run response timeout in seconds (0 or empty disables timeout)
       - GRAPH_RESPONSE_TIMEOUT_SECONDS=${GRAPH_RESPONSE_TIMEOUT_SECONDS:-1200}
-      # codex.sandbox piston API used by /sandbox/run
-      - SANDBOX_BASE_URL=${SANDBOX_BASE_URL:-http://codex-sandbox:2000}
+      # hard cap for /sandbox/run timeout seconds (protects upstream runtime limits)
+      - SANDBOX_HARD_TIMEOUT_SECONDS=${SANDBOX_HARD_TIMEOUT_SECONDS:-3}
 
   codex-sandbox:
     image: craftslab/codex-sandbox:latest
