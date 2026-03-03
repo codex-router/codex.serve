@@ -23,6 +23,7 @@ DEMO_CONTEXT_OVERFLOW="${DEMO_CONTEXT_OVERFLOW:-false}"
 SANDBOX_DEMO_ENABLED="${SANDBOX_DEMO_ENABLED:-true}"
 SANDBOX_COMMAND="${SANDBOX_COMMAND:-echo hello-from-sandbox}"
 SANDBOX_BASE_URL="${SANDBOX_BASE_URL:-http://localhost:2000}"
+SANDBOX_PROBE_URL="${SANDBOX_PROBE_URL:-${SANDBOX_BASE_URL}}"
 SANDBOX_TIMEOUT_SECONDS="${SANDBOX_TIMEOUT_SECONDS:-3}"
 RUN_DATE="$(date +%Y%m%d-%H%M%S)"
 OUT_PATH="${OUT_PATH:-/tmp/codex-serve-example-out-${RUN_DATE}}"
@@ -95,10 +96,15 @@ trap cleanup EXIT
 mkdir -p "${OUT_PATH}"
 
 ensure_sandbox_bash_runtime() {
-  local runtimes_response install_status install_body
+  local runtimes_response install_status install_body probe_url
 
-  if ! runtimes_response="$(curl -sS -f "${SANDBOX_BASE_URL}/api/v2/runtimes" 2>/dev/null)"; then
-    echo "warning: unable to query ${SANDBOX_BASE_URL}/api/v2/runtimes; skipping runtime preflight"
+  probe_url="${SANDBOX_PROBE_URL}"
+  if [[ "${probe_url}" == "http://codex-sandbox:2000" ]] || [[ "${probe_url}" == "http://sandbox:2000" ]]; then
+    probe_url="http://localhost:2000"
+  fi
+
+  if ! runtimes_response="$(curl -sS -f "${probe_url}/api/v2/runtimes" 2>/dev/null)"; then
+    echo "warning: unable to query ${probe_url}/api/v2/runtimes; skipping runtime preflight"
     return 0
   fi
 
@@ -107,9 +113,9 @@ ensure_sandbox_bash_runtime() {
     return 0
   fi
 
-  echo "sandbox runtime preflight: installing bash runtime via ${SANDBOX_BASE_URL}/api/v2/packages"
+  echo "sandbox runtime preflight: installing bash runtime via ${probe_url}/api/v2/packages"
   install_body="$(mktemp)"
-  install_status="$(curl -sS -o "${install_body}" -w "%{http_code}" -X POST "${SANDBOX_BASE_URL}/api/v2/packages" \
+  install_status="$(curl -sS -o "${install_body}" -w "%{http_code}" -X POST "${probe_url}/api/v2/packages" \
     -H "Content-Type: application/json" \
     --data-binary '{"language":"bash","version":"*"}' || true)"
 
@@ -403,6 +409,7 @@ if [[ "${SANDBOX_DEMO_ENABLED}" =~ ^(1|true|yes|on)$ ]]; then
   echo "Testing POST ${BASE_URL}/sandbox/run"
   echo "sandboxCommand=${SANDBOX_COMMAND}"
   echo "sandboxBaseUrl=${SANDBOX_BASE_URL}"
+  echo "sandboxProbeUrl=${SANDBOX_PROBE_URL}"
   echo "sandboxTimeoutSeconds=${SANDBOX_TIMEOUT_SECONDS} (capped to 3 for codex-sandbox runtime limits)"
 
   ensure_sandbox_bash_runtime

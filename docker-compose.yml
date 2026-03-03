@@ -1,6 +1,8 @@
 services:
   codex-serve:
     image: craftslab/codex-serve:latest
+    depends_on:
+      - codex-sandbox
     ports:
       - "8000:8000"
     extra_hosts:
@@ -33,4 +35,16 @@ services:
       # /graph/run response timeout in seconds (0 or empty disables timeout)
       - GRAPH_RESPONSE_TIMEOUT_SECONDS=${GRAPH_RESPONSE_TIMEOUT_SECONDS:-1200}
       # codex.sandbox piston API used by /sandbox/run
-      - SANDBOX_BASE_URL=${SANDBOX_BASE_URL:-http://host.docker.internal:2000}
+      - SANDBOX_BASE_URL=${SANDBOX_BASE_URL:-http://codex-sandbox:2000}
+
+  codex-sandbox:
+    image: craftslab/codex-sandbox:latest
+    container_name: codex-sandbox
+    restart: always
+    privileged: true
+    ports:
+      - "2000:2000"
+    volumes:
+      - ./codex-sandbox/packages:/piston/packages
+    tmpfs:
+      - /tmp:exec

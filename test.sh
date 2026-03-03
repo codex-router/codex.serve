@@ -14,6 +14,7 @@ SERVE_CONTAINER_NAME="codex-serve-test"
 SANDBOX_IMAGE_TAG="craftslab/codex-sandbox:latest"
 SANDBOX_CONTAINER_NAME="codex-sandbox-test"
 SANDBOX_PORT="2000"
+TEST_NETWORK_NAME="codex-serve-test-net"
 GRAPH_CONTAINER_NAME="codex-graph-test"
 GRAPH_DEFAULT_CONTAINER_NAME="codex-graph-backend"
 SERVE_PORT="18000"
@@ -48,6 +49,7 @@ cleanup() {
 	docker rm -f "${GRAPH_DEFAULT_CONTAINER_NAME}" >/dev/null 2>&1 || true
 	docker rm -f "${SANDBOX_CONTAINER_NAME}" >/dev/null 2>&1 || true
 	docker rm -f "${SERVE_CONTAINER_NAME}" >/dev/null 2>&1 || true
+	docker network rm "${TEST_NETWORK_NAME}" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -88,9 +90,13 @@ echo "[4/7] Building codex.serve Docker image: ${SERVE_IMAGE_TAG}"
 docker build -t "${SERVE_IMAGE_TAG}" -f "${SCRIPT_DIR}/Dockerfile" "${SCRIPT_DIR}"
 
 echo "[5/7] Starting codex-sandbox container: ${SANDBOX_IMAGE_TAG}"
+docker network create "${TEST_NETWORK_NAME}" >/dev/null
+
 docker run -d \
 	--name "${SANDBOX_CONTAINER_NAME}" \
 	--label "${TEST_CONTAINER_LABEL}" \
+	--network "${TEST_NETWORK_NAME}" \
+	--network-alias codex-sandbox \
 	--privileged \
 	--tmpfs /tmp:exec \
 	-p "${SANDBOX_PORT}:2000" \
@@ -135,6 +141,7 @@ echo "[6/7] Running codex.serve with CODEX_AGENT_IMAGE=${AGENT_IMAGE_TAG} and CO
 docker run -d \
 	--name "${SERVE_CONTAINER_NAME}" \
 	--label "${TEST_CONTAINER_LABEL}" \
+	--network "${TEST_NETWORK_NAME}" \
 	--add-host host.docker.internal:host-gateway \
 	-p "${SERVE_PORT}:8000" \
 	-v /var/run/docker.sock:/var/run/docker.sock \
@@ -160,7 +167,7 @@ docker run -d \
 	-e LITELLM_API_KEY="test-api-key" \
 	-e LITELLM_SSL_VERIFY="false" \
 	-e LITELLM_CA_BUNDLE="" \
-	-e SANDBOX_BASE_URL="http://host.docker.internal:${SANDBOX_PORT}" \
+	-e SANDBOX_BASE_URL="http://codex-sandbox:2000" \
 	"${SERVE_IMAGE_TAG}" >/dev/null
 
 echo "- Waiting for codex.serve readiness..."

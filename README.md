@@ -66,7 +66,7 @@ The server reads supported agents from `AGENT_LIST` (comma-separated). In local 
 | `GRAPH_MODEL` | *(unset)* | Default graph model for `POST /graph/run` (mapped to forwarded payload env `LITELLM_MODEL`; falls back to `LITELLM_MODEL` when unset) |
 | `CODEX_GRAPH_IMAGE` | `craftslab/codex-graph-cli:latest` | Docker image used by `POST /graph/run` for direct `main.py analyze` execution |
 | `GRAPH_RESPONSE_TIMEOUT_SECONDS` | *(unset)* | Optional timeout (seconds) for `POST /graph/run`; `<= 0`, empty, or invalid disables timeout |
-| `SANDBOX_BASE_URL` | `http://localhost:2000` (or `http://host.docker.internal:2000` in Docker) | Base URL for codex-sandbox API used by `POST /sandbox/run` |
+| `SANDBOX_BASE_URL` | `http://localhost:2000` (or `http://codex-sandbox:2000` in Docker Compose) | Base URL for codex-sandbox API used by `POST /sandbox/run` |
 | `SANDBOX_RUN_TIMEOUT_SECONDS` | `60` | Default timeout (seconds) for `POST /sandbox/run` when request timeout is omitted or invalid |
 | `REQUEST_QUEUE_MAX_PENDING` | `100` | Max pending requests allowed per queued API before returning `503` |
 | `REQUEST_QUEUE_WAIT_TIMEOUT_SECONDS` | *(unset)* | Optional max wait time in queue before returning `503`; empty/invalid/`<= 0` disables queue wait timeout |
@@ -128,7 +128,7 @@ This configuration:
 - Uses `CODEX_GRAPH_IMAGE` (`craftslab/codex-graph-cli:latest`) for `POST /graph/run` with stdin payload:
   - `analyze --request-json - --pretty`
   - Request fields (`code`, `file_paths`, `framework_hint`, optional `metadata`, optional `http_connections`) are serialized to JSON and passed via stdin.
-- For `POST /sandbox/run`, forwards requests to codex-sandbox Piston API (`SANDBOX_BASE_URL`, default `http://host.docker.internal:2000` when running in Docker).
+- For `POST /sandbox/run`, forwards requests to codex-sandbox Piston API (`SANDBOX_BASE_URL`, default `http://codex-sandbox:2000` when running in Docker Compose).
 - Supports `GRAPH_MODEL` for `POST /graph/run` payload env forwarding as `LITELLM_MODEL`.
 - Supports `LITELLM_SSL_VERIFY` (default `false`) and optional `LITELLM_CA_BUNDLE` for LiteLLM/self-signed cert scenarios.
 - Sets `RUN_RESPONSE_TIMEOUT_SECONDS` in [docker-compose.yml](docker-compose.yml) (default `300`) to bound `POST /agent/run` response time in container deployments.

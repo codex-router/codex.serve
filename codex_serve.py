@@ -3,6 +3,7 @@ import asyncio
 import json
 import codecs
 import base64
+import logging
 import shutil
 import tempfile
 import urllib.request
@@ -20,6 +21,8 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 app = FastAPI()
+logger = logging.getLogger("codex.serve")
+logger.setLevel(logging.INFO)
 
 
 class ContextFileItem(BaseModel):
@@ -231,7 +234,7 @@ SANDBOX_MAX_CONCURRENT_REQUESTS = _parse_non_negative_int(
 
 def _default_sandbox_base_url() -> str:
     if os.path.exists("/.dockerenv"):
-        return "http://host.docker.internal:2000"
+        return "http://codex-sandbox:2000"
     return "http://localhost:2000"
 
 
@@ -240,9 +243,16 @@ SANDBOX_BASE_URL = (os.environ.get("SANDBOX_BASE_URL") or _default_sandbox_base_
 
 def _build_sandbox_base_url_candidates(base_url: str) -> List[str]:
     candidates: List[str] = []
+
+    def _add_candidate(value: Optional[str]) -> None:
+        normalized_value = (value or "").strip().rstrip("/")
+        if not normalized_value:
+            return
+        if normalized_value not in candidates:
+            candidates.append(normalized_value)
+
     normalized = (base_url or "").strip().rstrip("/")
-    if normalized:
-        candidates.append(normalized)
+    _add_candidate(normalized)
 
     if normalized:
         try:
@@ -260,10 +270,18 @@ def _build_sandbox_base_url_candidates(base_url: str) -> List[str]:
                 replacement = f"[{alt_host}]" if host == "::1" else alt_host
                 alt_netloc = parsed.netloc.replace(parsed.hostname, replacement)
                 alternative = urllib.parse.urlunparse(parsed._replace(netloc=alt_netloc)).rstrip("/")
-                if alternative and alternative not in candidates:
-                    candidates.append(alternative)
+                _add_candidate(alternative)
         except Exception:
             pass
+
+    if os.path.exists("/.dockerenv"):
+        _add_candidate("http://host.docker.internal:2000")
+        _add_candidate("http://codex-sandbox:2000")
+        _add_candidate("http://sandbox:2000")
+        _add_candidate("http://piston_api:2000")
+        _add_candidate("http://localhost:2000")
+    else:
+        _add_candidate("http://localhost:2000")
 
     return candidates
 
@@ -1505,6 +1523,52 @@ async def _get_json(url: str, timeout_seconds: Optional[float]) -> tuple[int, st
     return await asyncio.to_thread(_do_get)
 
 
+async def _probe_sandbox_upstream(base_url: str, timeout_seconds: float) -> Dict[str, Any]:
+    probe_timeout = max(1.0, min(timeout_seconds, 5.0))
+    health_url = f"{base_url}/health"
+    runtimes_url = f"{base_url}/api/v2/runtimes"
+
+    result: Dict[str, Any] = {
+        "base_url": base_url,
+        "health_ok": False,
+        "runtimes_ok": False,
+        "health_status": None,
+        "runtimes_status": None,
+        "health_error": "",
+        "runtimes_error": "",
+    }
+
+    try:
+        health_status, health_body = await _get_json(health_url, timeout_seconds=probe_timeout)
+        result["health_status"] = health_status
+        result["health_ok"] = 200 <= health_status < 300
+        logger.info(
+            "sandbox upstream health probe: url=%s status=%s body_len=%s",
+            health_url,
+            health_status,
+            len(health_body or ""),
+        )
+    except Exception as exc:
+        result["health_error"] = str(exc)
+        logger.warning("sandbox upstream health probe failed: url=%s error=%s", health_url, exc)
+
+    try:
+        runtimes_status, runtimes_body = await _get_json(runtimes_url, timeout_seconds=probe_timeout)
+        result["runtimes_status"] = runtimes_status
+        result["runtimes_ok"] = 200 <= runtimes_status < 300
+        logger.info(
+            "sandbox upstream runtimes probe: url=%s status=%s body_len=%s",
+            runtimes_url,
+            runtimes_status,
+            len(runtimes_body or ""),
+        )
+    except Exception as exc:
+        result["runtimes_error"] = str(exc)
+        logger.warning("sandbox upstream runtimes probe failed: url=%s error=%s", runtimes_url, exc)
+
+    return result
+
+
 async def _is_graph_healthy() -> bool:
     for base_url in GRAPH_BASE_URL_CANDIDATES:
         health_url = f"{base_url}/health"
@@ -1924,12 +1988,29 @@ async def run_sandbox(req: SandboxRunRequest):
             "run_cpu_time": timeout_ms,
         }
 
+        logger.info(
+            "sandbox.run request: timeout_seconds=%s cwd=%s candidates=%s command_preview=%s",
+            timeout_seconds,
+            cwd_value,
+            SANDBOX_BASE_URL_CANDIDATES,
+            command_text[:200],
+        )
+
         last_status_code: Optional[int] = None
         last_response_body = ""
         connection_errors: List[str] = []
+        probe_summaries: List[str] = []
 
         for sandbox_base_url in SANDBOX_BASE_URL_CANDIDATES:
             upstream_url = f"{sandbox_base_url}/api/v2/execute"
+
+            probe_result = await _probe_sandbox_upstream(sandbox_base_url, timeout_seconds=timeout_seconds)
+            probe_summary = (
+                f"{sandbox_base_url} health={probe_result.get('health_status')}"
+                f" runtimes={probe_result.get('runtimes_status')}"
+            )
+            probe_summaries.append(probe_summary)
+            logger.info("sandbox upstream probe summary: %s", probe_summary)
 
             try:
                 status_code, response_body = await _post_json(
@@ -1939,7 +2020,18 @@ async def run_sandbox(req: SandboxRunRequest):
                 )
                 last_status_code = status_code
                 last_response_body = response_body
+                logger.info(
+                    "sandbox execute response: upstream=%s status=%s body_len=%s",
+                    upstream_url,
+                    status_code,
+                    len(response_body or ""),
+                )
             except (TimeoutError, socket.timeout):
+                logger.warning(
+                    "sandbox execute timed out: upstream=%s timeout_seconds=%s",
+                    upstream_url,
+                    timeout_seconds,
+                )
                 return SandboxRunResponse(
                     stdout="",
                     stderr=(
@@ -1954,6 +2046,11 @@ async def run_sandbox(req: SandboxRunRequest):
             except urllib.error.URLError as exc:
                 reason = getattr(exc, "reason", exc)
                 connection_errors.append(f"{upstream_url}: {reason}")
+                logger.warning(
+                    "sandbox execute connection failed: upstream=%s error=%s",
+                    upstream_url,
+                    reason,
+                )
                 continue
 
             if not (200 <= status_code < 300):
@@ -2003,22 +2100,36 @@ async def run_sandbox(req: SandboxRunRequest):
             )
 
         if connection_errors:
+            logger.error(
+                "sandbox upstream connection failures: probes=%s errors=%s",
+                probe_summaries,
+                connection_errors,
+            )
             raise HTTPException(
                 status_code=502,
                 detail=(
                     "codex-sandbox connection failed. "
                     + " ; ".join(connection_errors)
+                    + " ; probes="
+                    + " | ".join(probe_summaries)
                     + " ; set SANDBOX_BASE_URL to a reachable codex-sandbox endpoint."
                 ),
             )
 
         if last_status_code is not None:
             detail = _normalize_graph_upstream_error(last_status_code, last_response_body)
+            logger.error(
+                "sandbox upstream request failed: status=%s detail=%s probes=%s",
+                last_status_code,
+                detail,
+                probe_summaries,
+            )
             raise HTTPException(
                 status_code=502,
                 detail=f"codex-sandbox request failed: {detail}",
             )
 
+        logger.error("sandbox upstream unreachable: probes=%s", probe_summaries)
         raise HTTPException(
             status_code=502,
             detail="codex-sandbox request failed: no reachable upstream endpoints",
