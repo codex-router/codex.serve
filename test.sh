@@ -20,6 +20,34 @@ GRAPH_DEFAULT_CONTAINER_NAME="codex-graph-backend"
 SERVE_PORT="18000"
 TEST_CONTAINER_LABEL="codex.serve.test=true"
 TMP_DIR=""
+OPENCLAW_TEST_ENABLED="${OPENCLAW_TEST_ENABLED:-false}"
+OPENCLAW_COMPOSE_FILE="${OPENCLAW_COMPOSE_FILE:-}"
+OPENCLAW_PROJECT_DIR="${OPENCLAW_PROJECT_DIR:-}"
+OPENCLAW_CLI_SERVICE="${OPENCLAW_CLI_SERVICE:-openclaw-cli}"
+OPENCLAW_GATEWAY_SERVICE="${OPENCLAW_GATEWAY_SERVICE:-openclaw-gateway}"
+OPENCLAW_AUTO_START_GATEWAY="${OPENCLAW_AUTO_START_GATEWAY:-true}"
+OPENCLAW_TUI_URL="${OPENCLAW_TUI_URL:-ws://127.0.0.1:18789}"
+OPENCLAW_TUI_TOKEN="${OPENCLAW_TUI_TOKEN:-}"
+OPENCLAW_TUI_PASSWORD="${OPENCLAW_TUI_PASSWORD:-}"
+OPENCLAW_IMAGE="${OPENCLAW_IMAGE:-ghcr.io/openclaw/openclaw:main-amd64}"
+OPENCLAW_STOP_WAIT_SECONDS="${OPENCLAW_STOP_WAIT_SECONDS:-15}"
+
+if [ -z "${OPENCLAW_PROJECT_DIR}" ] && [ -n "${OPENCLAW_COMPOSE_FILE}" ]; then
+	OPENCLAW_PROJECT_DIR="$(cd "$(dirname "${OPENCLAW_COMPOSE_FILE}")" && pwd)"
+fi
+
+if [ -z "${OPENCLAW_COMPOSE_FILE}" ] && [ -n "${OPENCLAW_PROJECT_DIR}" ]; then
+	OPENCLAW_COMPOSE_FILE="${OPENCLAW_PROJECT_DIR}/docker-compose.yml"
+fi
+
+OPENCLAW_DOCKER_RUN_ARGS=()
+if [[ "${OPENCLAW_TEST_ENABLED}" =~ ^(1|true|yes|on)$ ]]; then
+	if [ -z "${OPENCLAW_PROJECT_DIR}" ] || [ -z "${OPENCLAW_COMPOSE_FILE}" ]; then
+		echo "OPENCLAW_TEST_ENABLED requires OPENCLAW_PROJECT_DIR or OPENCLAW_COMPOSE_FILE"
+		exit 1
+	fi
+	OPENCLAW_DOCKER_RUN_ARGS+=( -v "${OPENCLAW_PROJECT_DIR}:${OPENCLAW_PROJECT_DIR}" )
+fi
 
 cleanup() {
 	if [ -n "${RUN_PID:-}" ]; then
@@ -145,6 +173,7 @@ docker run -d \
 	--add-host host.docker.internal:host-gateway \
 	-p "${SERVE_PORT}:8000" \
 	-v /var/run/docker.sock:/var/run/docker.sock \
+	"${OPENCLAW_DOCKER_RUN_ARGS[@]}" \
 	-e AGENT_LIST="codex,bash,team" \
 	-e AGENT_MODEL="auto,test-model-fast,test-model-fallback" \
 	-e CODEX_AGENT_IMAGE="${AGENT_IMAGE_TAG}" \
@@ -559,6 +588,123 @@ if not exit_events:
 if exit_events[-1].get("code") != 0:
 	raise SystemExit(f"/agent/run base64 context test expected exit 0, got {exit_events[-1].get('code')}")
 PY
+
+if [[ "${OPENCLAW_TEST_ENABLED}" =~ ^(1|true|yes|on)$ ]]; then
+	echo "- Testing POST /agent/run with agent=openclaw (optional external smoke test)"
+	OPENCLAW_RUN_BODY="${TMP_DIR}/openclaw-run.ndjson"
+	OPENCLAW_RUN_PAYLOAD="${TMP_DIR}/openclaw-run.json"
+	OPENCLAW_STOP_BODY="${TMP_DIR}/openclaw-stop.json"
+
+	python3 - \
+		"${OPENCLAW_RUN_PAYLOAD}" \
+		"${OPENCLAW_COMPOSE_FILE}" \
+		"${OPENCLAW_PROJECT_DIR}" \
+		"${OPENCLAW_CLI_SERVICE}" \
+		"${OPENCLAW_GATEWAY_SERVICE}" \
+		"${OPENCLAW_AUTO_START_GATEWAY}" \
+		"${OPENCLAW_TUI_URL}" \
+		"${OPENCLAW_TUI_TOKEN}" \
+		"${OPENCLAW_TUI_PASSWORD}" \
+		"${OPENCLAW_IMAGE}" <<'PY'
+import json
+import sys
+
+payload_path = sys.argv[1]
+compose_file = sys.argv[2].strip()
+project_dir = sys.argv[3].strip()
+cli_service = sys.argv[4].strip()
+gateway_service = sys.argv[5].strip()
+auto_start = sys.argv[6].strip()
+tui_url = sys.argv[7].strip()
+tui_token = sys.argv[8].strip()
+tui_password = sys.argv[9].strip()
+openclaw_image = sys.argv[10].strip()
+
+env = {}
+if compose_file:
+	env["OPENCLAW_COMPOSE_FILE"] = compose_file
+if project_dir:
+	env["OPENCLAW_PROJECT_DIR"] = project_dir
+if cli_service:
+	env["OPENCLAW_CLI_SERVICE"] = cli_service
+if gateway_service:
+	env["OPENCLAW_GATEWAY_SERVICE"] = gateway_service
+if auto_start:
+	env["OPENCLAW_AUTO_START_GATEWAY"] = auto_start
+if tui_url:
+	env["OPENCLAW_TUI_URL"] = tui_url
+if tui_token:
+	env["OPENCLAW_TUI_TOKEN"] = tui_token
+if tui_password:
+	env["OPENCLAW_TUI_PASSWORD"] = tui_password
+if openclaw_image:
+	env["OPENCLAW_IMAGE"] = openclaw_image
+
+payload = {
+	"agent": "openclaw",
+	"args": [],
+	"stdin": "Reply with a short OpenClaw smoke-test acknowledgement.",
+	"sessionId": "openclaw-run-session",
+	"env": env,
+}
+
+with open(payload_path, "w", encoding="utf-8") as f:
+	json.dump(payload, f)
+PY
+
+	curl -sS -N -o "${OPENCLAW_RUN_BODY}" \
+		-X POST "http://127.0.0.1:${SERVE_PORT}/agent/run" \
+		-H "Content-Type: application/json" \
+		--data-binary "@${OPENCLAW_RUN_PAYLOAD}" &
+	OPENCLAW_RUN_PID=$!
+
+	sleep "${OPENCLAW_STOP_WAIT_SECONDS}"
+
+	if kill -0 "${OPENCLAW_RUN_PID}" >/dev/null 2>&1; then
+		OPENCLAW_STOP_STATUS="$(curl -sS -o "${OPENCLAW_STOP_BODY}" -w "%{http_code}" -X POST "http://127.0.0.1:${SERVE_PORT}/sessions/openclaw-run-session/stop")"
+		if [ "${OPENCLAW_STOP_STATUS}" != "200" ] && [ "${OPENCLAW_STOP_STATUS}" != "404" ]; then
+			echo "Expected HTTP 200/404 from /sessions/openclaw-run-session/stop, got ${OPENCLAW_STOP_STATUS}"
+			cat "${OPENCLAW_STOP_BODY}"
+			kill "${OPENCLAW_RUN_PID}" >/dev/null 2>&1 || true
+			exit 1
+		fi
+	fi
+
+	wait "${OPENCLAW_RUN_PID}" || true
+	unset OPENCLAW_RUN_PID
+
+	python3 - "${OPENCLAW_RUN_BODY}" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+events = []
+
+with open(path, "r", encoding="utf-8") as f:
+	for line in f:
+		line = line.strip()
+		if not line:
+			continue
+		events.append(json.loads(line))
+
+if not events:
+	raise SystemExit("/agent/run openclaw test returned no NDJSON events")
+
+session_events = [e for e in events if e.get("type") == "session"]
+if not session_events:
+	raise SystemExit("/agent/run openclaw response missing session event")
+
+if session_events[0].get("id") != "openclaw-run-session":
+	raise SystemExit(f"/agent/run openclaw session id mismatch: {session_events[0].get('id')}")
+
+exit_events = [e for e in events if e.get("type") == "exit"]
+if not exit_events:
+	raise SystemExit("/agent/run openclaw response missing exit event")
+
+if not isinstance(exit_events[-1].get("code"), int):
+	raise SystemExit(f"/agent/run openclaw exit code is invalid: {exit_events[-1]}")
+PY
+fi
 
 echo "- Testing POST /agent/run auto-compress retry on context overflow"
 COMPRESS_RUN_BODY="${TMP_DIR}/compress-run.ndjson"
