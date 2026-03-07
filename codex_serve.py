@@ -696,17 +696,207 @@ def _run_openclaw_compose_command(
         ) from exc
 
 
+def _get_openclaw_compose_services(
+    compose_command: List[str],
+    compose_file: str,
+    project_dir: str,
+) -> List[str]:
+    result = _run_openclaw_compose_command(
+        compose_command,
+        compose_file,
+        project_dir,
+        ["config", "--services"],
+        timeout_seconds=30.0,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "failed to list OpenClaw Compose services").strip()
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to inspect OpenClaw Docker Compose services: {detail}",
+        )
+
+    services: List[str] = []
+    for line in (result.stdout or "").splitlines():
+        service_name = line.strip()
+        if service_name and service_name not in services:
+            services.append(service_name)
+
+    if services:
+        return services
+
+    raise HTTPException(
+        status_code=502,
+        detail="OpenClaw Docker Compose project does not define any services.",
+    )
+
+
+def _looks_like_openclaw_service_name(service_name: str) -> bool:
+    normalized = (service_name or "").strip().lower()
+    if not normalized:
+        return False
+    return (
+        "openclaw" in normalized
+        or normalized.endswith("-gateway")
+        or normalized.endswith("_gateway")
+        or normalized.endswith("-cli")
+        or normalized.endswith("_cli")
+    )
+
+
+def _find_openclaw_compose_fallbacks(
+    compose_file: str,
+    project_dir: str,
+) -> List[tuple[str, str]]:
+    candidates: List[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def _add_candidate(candidate_file: str, candidate_project_dir: str) -> None:
+        if not candidate_file:
+            return
+        absolute_file = os.path.abspath(os.path.expanduser(candidate_file))
+        absolute_project_dir = os.path.abspath(os.path.expanduser(candidate_project_dir or os.path.dirname(absolute_file)))
+        key = (absolute_file, absolute_project_dir)
+        if key in seen or not os.path.isfile(absolute_file):
+            return
+        seen.add(key)
+        candidates.append(key)
+
+    if project_dir:
+        _add_candidate(os.path.join(project_dir, "docker-compose.yml"), project_dir)
+        _add_candidate(os.path.join(project_dir, "compose.yml"), project_dir)
+
+    compose_dir = os.path.dirname(compose_file) if compose_file else ""
+    if compose_dir:
+        _add_candidate(os.path.join(compose_dir, "openclaw", "docker-compose.yml"), os.path.join(compose_dir, "openclaw"))
+        _add_candidate(os.path.join(compose_dir, "openclaw", "compose.yml"), os.path.join(compose_dir, "openclaw"))
+
+    return candidates
+
+
+def _resolve_openclaw_compose_target(
+    compose_command: List[str],
+    compose_file: str,
+    project_dir: str,
+) -> tuple[str, str, List[str]]:
+    available_services = _get_openclaw_compose_services(compose_command, compose_file, project_dir)
+    if any(_looks_like_openclaw_service_name(service) for service in available_services):
+        return compose_file, project_dir, available_services
+
+    for fallback_compose_file, fallback_project_dir in _find_openclaw_compose_fallbacks(compose_file, project_dir):
+        if fallback_compose_file == compose_file and fallback_project_dir == project_dir:
+            continue
+        fallback_services = _get_openclaw_compose_services(
+            compose_command,
+            fallback_compose_file,
+            fallback_project_dir,
+        )
+        if not any(_looks_like_openclaw_service_name(service) for service in fallback_services):
+            continue
+
+        logger.warning(
+            "OpenClaw compose file '%s' did not expose OpenClaw services; using '%s' instead",
+            compose_file,
+            fallback_compose_file,
+        )
+        return fallback_compose_file, fallback_project_dir, fallback_services
+
+    available = ", ".join(available_services)
+    raise HTTPException(
+        status_code=502,
+        detail=(
+            "Configured OpenClaw Compose project does not expose any OpenClaw services. "
+            f"Compose file: {compose_file}. Available services: {available}. "
+            "Set OPENCLAW_COMPOSE_FILE or OPENCLAW_PROJECT_DIR to the real OpenClaw project."
+        ),
+    )
+
+
+def _resolve_openclaw_service_name(
+    requested_service: str,
+    available_services: List[str],
+    fallback_candidates: List[str],
+    purpose: str,
+) -> str:
+    normalized_to_actual = {service.strip().lower(): service for service in available_services if service.strip()}
+
+    def _match_candidate(candidate: str) -> Optional[str]:
+        normalized_candidate = (candidate or "").strip().lower()
+        if not normalized_candidate:
+            return None
+        return normalized_to_actual.get(normalized_candidate)
+
+    requested_actual = _match_candidate(requested_service)
+    if requested_actual:
+        return requested_actual
+
+    candidate_order: List[str] = []
+    for candidate in [requested_service, *fallback_candidates]:
+        normalized_candidate = (candidate or "").strip()
+        if normalized_candidate and normalized_candidate.lower() not in {
+            item.lower() for item in candidate_order
+        }:
+            candidate_order.append(normalized_candidate)
+
+    for candidate in candidate_order:
+        matched = _match_candidate(candidate)
+        if matched:
+            if requested_service and candidate.lower() != requested_service.strip().lower():
+                logger.warning(
+                    "OpenClaw %s service '%s' was not found; using '%s' instead",
+                    purpose,
+                    requested_service,
+                    matched,
+                )
+            return matched
+
+    purpose_tokens = [token for token in fallback_candidates if token]
+    heuristic_matches: List[str] = []
+    for service in available_services:
+        normalized_service = service.lower()
+        if any(token.lower() in normalized_service for token in purpose_tokens):
+            heuristic_matches.append(service)
+
+    if len(heuristic_matches) == 1:
+        matched = heuristic_matches[0]
+        if requested_service:
+            logger.warning(
+                "OpenClaw %s service '%s' was not found; using detected service '%s'",
+                purpose,
+                requested_service,
+                matched,
+            )
+        return matched
+
+    available = ", ".join(available_services)
+    requested_label = requested_service or "(unset)"
+    raise HTTPException(
+        status_code=502,
+        detail=(
+            f"OpenClaw {purpose} service '{requested_label}' was not found in the Compose project. "
+            f"Available services: {available}"
+        ),
+    )
+
+
+def _resolve_openclaw_tui_url(
+    req_env: Optional[Dict[str, str]],
+    gateway_service: str,
+) -> str:
+    configured_url = _openclaw_env_value(req_env, "OPENCLAW_TUI_URL")
+    if configured_url:
+        return configured_url
+
+    gateway_port = _openclaw_env_value(req_env, "OPENCLAW_GATEWAY_PORT", "18789") or "18789"
+    return f"ws://{gateway_service}:{gateway_port}"
+
+
 def _ensure_openclaw_runtime_config(
     compose_command: List[str],
     compose_file: str,
     project_dir: str,
     req_env: Optional[Dict[str, str]],
+    cli_service: str,
 ) -> None:
-    cli_service = (
-        _openclaw_env_value(req_env, "OPENCLAW_CLI_SERVICE", "openclaw-cli")
-        or "openclaw-cli"
-    )
-
     config_updates: List[tuple[str, str]] = []
 
     tools_profile = _openclaw_env_value(req_env, "OPENCLAW_TOOLS_PROFILE", "full")
@@ -760,6 +950,7 @@ def _ensure_openclaw_gateway_running(
     compose_file: str,
     project_dir: str,
     req_env: Optional[Dict[str, str]],
+    gateway_service: str,
 ) -> None:
     auto_start_enabled = _parse_bool(
         _openclaw_env_value(req_env, "OPENCLAW_AUTO_START_GATEWAY", "true"),
@@ -768,10 +959,6 @@ def _ensure_openclaw_gateway_running(
     if not auto_start_enabled:
         return
 
-    gateway_service = (
-        _openclaw_env_value(req_env, "OPENCLAW_GATEWAY_SERVICE", "openclaw-gateway")
-        or "openclaw-gateway"
-    )
     result = _run_openclaw_compose_command(
         compose_command,
         compose_file,
@@ -811,18 +998,34 @@ def _build_openclaw_command(
             detail=f"OpenClaw compose file not found: {compose_file}",
         )
 
-    cli_service = _openclaw_env_value(req_env, "OPENCLAW_CLI_SERVICE", "openclaw-cli") or "openclaw-cli"
-
     popen_env = os.environ.copy()
     if req_env:
         popen_env.update(req_env)
 
     normalized_args = _strip_model_args(list(args))
     command = _resolve_docker_compose_command()
-    _ensure_openclaw_runtime_config(command, compose_file, project_dir, req_env)
-    _ensure_openclaw_gateway_running(command, compose_file, project_dir, req_env)
+    compose_file, project_dir, available_services = _resolve_openclaw_compose_target(
+        command,
+        compose_file,
+        project_dir,
+    )
+    cli_service = _resolve_openclaw_service_name(
+        _openclaw_env_value(req_env, "OPENCLAW_CLI_SERVICE", "openclaw-cli") or "openclaw-cli",
+        available_services,
+        ["openclaw-cli", "openclaw", "cli"],
+        "CLI",
+    )
+    gateway_service = _resolve_openclaw_service_name(
+        _openclaw_env_value(req_env, "OPENCLAW_GATEWAY_SERVICE", "openclaw-gateway")
+        or "openclaw-gateway",
+        available_services,
+        ["openclaw-gateway", "gateway"],
+        "gateway",
+    )
+    _ensure_openclaw_runtime_config(command, compose_file, project_dir, req_env, cli_service)
+    _ensure_openclaw_gateway_running(command, compose_file, project_dir, req_env, gateway_service)
 
-    tui_url = _openclaw_env_value(req_env, "OPENCLAW_TUI_URL", "ws://127.0.0.1:18789")
+    tui_url = _resolve_openclaw_tui_url(req_env, gateway_service)
     tui_token = _openclaw_env_value(req_env, "OPENCLAW_TUI_TOKEN")
     tui_password = _openclaw_env_value(req_env, "OPENCLAW_TUI_PASSWORD")
 

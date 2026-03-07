@@ -1,16 +1,38 @@
 services:
+  docker-dind:
+    image: docker:27-dind
+    privileged: true
+    environment:
+      - DOCKER_TLS_CERTDIR=
+    command:
+      - --host=tcp://0.0.0.0:2375
+    volumes:
+      - docker-dind-data:/var/lib/docker
+      - ${OPENCLAW_PROJECT_MOUNT_SOURCE:-./openclaw}:${OPENCLAW_PROJECT_DIR:-/workspace/openclaw}
+    healthcheck:
+      test: ["CMD", "docker", "info"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
   codex-serve:
     image: craftslab/codex-serve:latest
     depends_on:
-      - codex-sandbox
+      codex-sandbox:
+        condition: service_started
+      docker-dind:
+        condition: service_healthy
     ports:
       - "8000:8000"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
-      # Mount the docker socket to allow spawning sibling containers
-      - /var/run/docker.sock:/var/run/docker.sock
+      # Mount the OpenClaw project at the same path used inside the Docker-in-Docker daemon.
+      - ${OPENCLAW_PROJECT_MOUNT_SOURCE:-./openclaw}:${OPENCLAW_PROJECT_DIR:-/workspace/openclaw}
     environment:
+      # Use the bundled Docker-in-Docker daemon for nested docker/docker compose commands.
+      - DOCKER_HOST=${DOCKER_HOST:-tcp://docker-dind:2375}
+      - DOCKER_TLS_CERTDIR=
       # Tell codex.serve to use the agent docker image
       - CODEX_AGENT_IMAGE=craftslab/codex-agent:latest
       # Tell codex.serve to use the insight docker image
@@ -26,8 +48,8 @@ services:
       # codex.sandbox piston API used by /sandbox/run
       - SANDBOX_BASE_URL=${SANDBOX_BASE_URL:-http://codex-sandbox:2000}
       # OpenClaw Docker Compose integration for agent=openclaw
-      - OPENCLAW_COMPOSE_FILE=${OPENCLAW_COMPOSE_FILE:-docker-compose.yml}
-      - OPENCLAW_PROJECT_DIR=${OPENCLAW_PROJECT_DIR:-openclaw}
+      - OPENCLAW_COMPOSE_FILE=${OPENCLAW_COMPOSE_FILE:-}
+      - OPENCLAW_PROJECT_DIR=${OPENCLAW_PROJECT_DIR:-/workspace/openclaw}
       - OPENCLAW_CLI_SERVICE=${OPENCLAW_CLI_SERVICE:-openclaw-cli}
       - OPENCLAW_GATEWAY_SERVICE=${OPENCLAW_GATEWAY_SERVICE:-openclaw-gateway}
       - OPENCLAW_AUTO_START_GATEWAY=${OPENCLAW_AUTO_START_GATEWAY:-true}
@@ -36,7 +58,7 @@ services:
       - OPENCLAW_GATEWAY_PORT=${OPENCLAW_GATEWAY_PORT:-18789}
       - OPENCLAW_GATEWAY_BIND=${OPENCLAW_GATEWAY_BIND:-lan}
       - OPENCLAW_CONTROL_UI_ALLOW_INSECURE_AUTH=${OPENCLAW_CONTROL_UI_ALLOW_INSECURE_AUTH:-}
-      - OPENCLAW_TUI_URL=${OPENCLAW_TUI_URL:-ws://127.0.0.1:18789}
+      - OPENCLAW_TUI_URL=${OPENCLAW_TUI_URL:-}
       - OPENCLAW_TUI_TOKEN=${OPENCLAW_TUI_TOKEN:-}
       - OPENCLAW_TUI_PASSWORD=${OPENCLAW_TUI_PASSWORD:-}
       - OPENCLAW_IMAGE=${OPENCLAW_IMAGE:-ghcr.io/openclaw/openclaw:main-amd64}
@@ -65,3 +87,6 @@ services:
       - ./codex-sandbox/packages:/piston/packages
     tmpfs:
       - /tmp:exec
+
+volumes:
+  docker-dind-data:
