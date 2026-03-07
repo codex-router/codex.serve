@@ -665,18 +665,51 @@ def _resolve_openclaw_compose_paths(req_env: Optional[Dict[str, str]]) -> tuple[
     return compose_file, project_dir
 
 
+def _build_openclaw_compose_env(
+    req_env: Optional[Dict[str, str]],
+    project_dir: str,
+) -> Dict[str, str]:
+    compose_env = os.environ.copy()
+    if req_env:
+        compose_env.update({key: str(value) for key, value in req_env.items()})
+
+    resolved_project_dir = project_dir or _openclaw_env_value(req_env, "OPENCLAW_PROJECT_DIR")
+    if resolved_project_dir:
+        resolved_project_dir = os.path.abspath(os.path.expanduser(resolved_project_dir))
+    else:
+        resolved_project_dir = "/workspace/openclaw"
+
+    default_config_dir = os.path.join(resolved_project_dir, ".openclaw")
+    default_workspace_dir = os.path.join(resolved_project_dir, "workspace")
+
+    compose_env.setdefault("OPENCLAW_PROJECT_DIR", resolved_project_dir)
+    compose_env.setdefault("OPENCLAWCONFIGDIR", default_config_dir)
+    compose_env.setdefault("OPENCLAWWORKSPACEDIR", default_workspace_dir)
+    compose_env.setdefault("OPENCLAWGATEWAYTOKEN", "openclaw-dev-token")
+
+    for path_value in [default_config_dir, default_workspace_dir]:
+        try:
+            os.makedirs(path_value, exist_ok=True)
+        except OSError:
+            logger.warning("Failed to ensure OpenClaw runtime path exists: %s", path_value)
+
+    return compose_env
+
+
 def _run_openclaw_compose_command(
     compose_command: List[str],
     compose_file: str,
     project_dir: str,
     extra_args: List[str],
     timeout_seconds: float,
+    req_env: Optional[Dict[str, str]] = None,
 ) -> subprocess.CompletedProcess:
     command = list(compose_command)
     if project_dir:
         command.extend(["--project-directory", project_dir])
     command.extend(["-f", compose_file])
     command.extend(extra_args)
+    compose_env = _build_openclaw_compose_env(req_env, project_dir)
 
     try:
         return subprocess.run(
@@ -685,6 +718,7 @@ def _run_openclaw_compose_command(
             capture_output=True,
             text=True,
             timeout=max(1.0, timeout_seconds),
+            env=compose_env,
         )
     except subprocess.TimeoutExpired as exc:
         raise HTTPException(
@@ -700,6 +734,7 @@ def _get_openclaw_compose_services(
     compose_command: List[str],
     compose_file: str,
     project_dir: str,
+    req_env: Optional[Dict[str, str]] = None,
 ) -> List[str]:
     result = _run_openclaw_compose_command(
         compose_command,
@@ -707,6 +742,7 @@ def _get_openclaw_compose_services(
         project_dir,
         ["config", "--services"],
         timeout_seconds=30.0,
+        req_env=req_env,
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "failed to list OpenClaw Compose services").strip()
@@ -777,8 +813,14 @@ def _resolve_openclaw_compose_target(
     compose_command: List[str],
     compose_file: str,
     project_dir: str,
+    req_env: Optional[Dict[str, str]] = None,
 ) -> tuple[str, str, List[str]]:
-    available_services = _get_openclaw_compose_services(compose_command, compose_file, project_dir)
+    available_services = _get_openclaw_compose_services(
+        compose_command,
+        compose_file,
+        project_dir,
+        req_env=req_env,
+    )
     if any(_looks_like_openclaw_service_name(service) for service in available_services):
         return compose_file, project_dir, available_services
 
@@ -789,6 +831,7 @@ def _resolve_openclaw_compose_target(
             compose_command,
             fallback_compose_file,
             fallback_project_dir,
+            req_env=req_env,
         )
         if not any(_looks_like_openclaw_service_name(service) for service in fallback_services):
             continue
@@ -934,6 +977,7 @@ def _ensure_openclaw_runtime_config(
             project_dir,
             ["run", "-T", "--rm", cli_service, "config", "set", config_path, config_value],
             timeout_seconds=120.0,
+            req_env=req_env,
         )
         if result.returncode == 0:
             continue
@@ -965,6 +1009,7 @@ def _ensure_openclaw_gateway_running(
         project_dir,
         ["up", "-d", gateway_service],
         timeout_seconds=120.0,
+        req_env=req_env,
     )
     if result.returncode == 0:
         return
@@ -1008,6 +1053,7 @@ def _build_openclaw_command(
         command,
         compose_file,
         project_dir,
+        req_env=req_env,
     )
     cli_service = _resolve_openclaw_service_name(
         _openclaw_env_value(req_env, "OPENCLAW_CLI_SERVICE", "openclaw-cli") or "openclaw-cli",
