@@ -8,7 +8,6 @@ HTTP server implementation for the Codex Gerrit plugin. This service exposes a R
 - Exposes a `POST /insight/run` endpoint to execute `codex-insight` Docker jobs and return generated insight pages.
 - Exposes a `POST /graph/run` endpoint to execute `codex.graph` CLI image using `analyze --request-json -` (stdin payload).
 - Exposes a `POST /sandbox/run` endpoint to execute shell commands via codex-sandbox (`craftslab/codex-sandbox:latest`) using Piston API.
-- Supports `agent: "openclaw"` by executing the OpenClaw CLI through a configured Docker Compose project.
 - Supports in-memory request queueing with bounded pending requests and per-endpoint concurrency limits for `/agent/run`, `/insight/run`, `/graph/run`, and `/sandbox/run`.
 - Supports on-demand `docker run --rm -i` execution of `codex.graph` CLI image for each `/graph/run` request.
 - Exposes a `POST /sessions/{sessionId}/stop` endpoint to stop an active `/agent/run` session.
@@ -53,22 +52,8 @@ The server reads supported agents from `AGENT_LIST` (comma-separated). In local 
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AGENT_LIST` | `codex` | Supported agent names (comma-separated). Include `team` to enable team orchestration mode for `POST /agent/run`; all non-`team` entries are used as specialist agents. Add `openclaw` to enable the OpenClaw Docker Compose runner. |
+| `AGENT_LIST` | `codex` | Supported agent names (comma-separated). Include `team` to enable team orchestration mode for `POST /agent/run`; all non-`team` entries are used as specialist agents. |
 | `AGENT_MODEL` | *(empty)* | Returned model IDs for `GET /models` (comma-separated). Include `auto` to enable server-side auto selection for `POST /agent/run` when request args contain `--model auto`. |
-| `OPENCLAW_COMPOSE_FILE` | *(unset)* | Path to the OpenClaw `docker-compose.yml` used when `agent=openclaw` |
-| `OPENCLAW_PROJECT_DIR` | *(unset)* | Optional OpenClaw project root. If `OPENCLAW_COMPOSE_FILE` is unset, `codex.serve` uses `<OPENCLAW_PROJECT_DIR>/docker-compose.yml` |
-| `OPENCLAW_CLI_SERVICE` | `openclaw-cli` | Compose service name used for OpenClaw CLI runs |
-| `OPENCLAW_GATEWAY_SERVICE` | `openclaw-gateway` | Compose service name used when `codex.serve` auto-starts the OpenClaw gateway |
-| `OPENCLAW_AUTO_START_GATEWAY` | `true` | Whether `codex.serve` should run `docker-compose up -d openclaw-gateway` before handling `agent=openclaw` |
-| `OPENCLAW_TOOLS_PROFILE` | `full` | Value written to `tools.profile` before OpenClaw startup |
-| `OPENCLAW_GATEWAY_MODE` | `local` | Value written to `gateway.mode` before OpenClaw startup |
-| `OPENCLAW_GATEWAY_PORT` | `18789` | Value written to `gateway.port` before OpenClaw startup |
-| `OPENCLAW_GATEWAY_BIND` | `lan` | Value written to `gateway.bind` before OpenClaw startup |
-| `OPENCLAW_CONTROL_UI_ALLOW_INSECURE_AUTH` | *(unset)* | Optional value written to `gateway.controlUi.allowInsecureAuth` before OpenClaw startup |
-| `OPENCLAW_TUI_URL` | `ws://127.0.0.1:18789` | WebSocket URL passed to `openclaw-cli tui` |
-| `OPENCLAW_TUI_TOKEN` | *(unset)* | Optional Gateway token passed to `openclaw-cli tui` |
-| `OPENCLAW_TUI_PASSWORD` | *(unset)* | Optional Gateway password passed to `openclaw-cli tui` |
-| `OPENCLAW_IMAGE` | *(unset)* | Optional image tag forwarded to the OpenClaw Compose process (for example `ghcr.io/openclaw/openclaw:main-amd64`) |
 | `LITELLM_BASE_URL` | *(unset)* | Default LiteLLM base URL passed to execution container in Docker mode |
 | `LITELLM_API_KEY` | *(unset)* | Default LiteLLM API key passed to execution container in Docker mode |
 | `LITELLM_SSL_VERIFY` | `false` | Default TLS verification behavior for LiteLLM calls (`false` supports self-signed certificates) |
@@ -113,35 +98,6 @@ When enabled:
 7. The `agent` value is used as the executable name inside the execution container.
 8. If `codex.serve` itself runs in Docker, mount `/var/run/docker.sock` so it can start sibling containers.
 
-### OpenClaw Docker Compose Mode
-
-When `agent` is `openclaw`, `codex.serve` does not use `CODEX_AGENT_IMAGE`. Instead it starts the OpenClaw gateway service if needed and runs the OpenClaw TUI through Docker Compose:
-
-- `docker compose up -d openclaw-gateway`
-- `docker compose run --rm openclaw-cli tui --url ws://127.0.0.1:18789 --message ...`
-
-or the equivalent `docker-compose` commands.
-
-Prerequisites:
-
-1. Prepare the OpenClaw project once:
-  - `export OPENCLAW_IMAGE="ghcr.io/openclaw/openclaw:main-amd64"`
-  - `docker-compose run --rm openclaw-cli onboard`
-  - update `~/.openclaw/openclaw.json` so it includes `tools.profile: "full"` and the gateway uses port `18789`, `mode: "local"`, and `bind: "lan"`
-  - `docker-compose down`
-  - `docker-compose up -d openclaw-gateway`
-2. Set either `OPENCLAW_COMPOSE_FILE` or `OPENCLAW_PROJECT_DIR` for `codex.serve`.
-3. If `codex.serve` runs in Docker, mount the OpenClaw project into the container at the same absolute host path so Compose bind mounts still resolve correctly.
-4. Optionally set `OPENCLAW_TUI_TOKEN` or `OPENCLAW_TUI_PASSWORD` if the Gateway requires auth.
-
-Request behavior:
-
-- `stdin` is mapped to `openclaw tui --message <stdin>`.
-- `sessionId` is mapped to `openclaw tui --session <sessionId>`.
-- `--model` / `-m` arguments are stripped because OpenClaw uses its own gateway/model configuration.
-- Before startup, `codex.serve` runs `openclaw-cli config set` so OpenClaw can use `tools.profile`, `gateway.mode`, `gateway.port`, and `gateway.bind` values configured through `OPENCLAW_*` env vars.
-- `codex.serve` runs `docker-compose up -d openclaw-gateway` before launching the TUI unless `OPENCLAW_AUTO_START_GATEWAY=false`.
-
 ## Usage
 
 ### Run with Python
@@ -170,7 +126,6 @@ This configuration:
 - Mounts the host's Docker socket (`/var/run/docker.sock`) so it can spawn sibling containers.
 - Configures `CODEX_AGENT_IMAGE` to `craftslab/codex-agent:latest` for executing agents safely. The server container will spawn this image for each request.
 - Configures `CODEX_INSIGHT_IMAGE` to `craftslab/codex-insight:latest` for insight generation requests.
-- Can optionally route `agent=openclaw` through an external OpenClaw Docker Compose project by setting `OPENCLAW_COMPOSE_FILE` or `OPENCLAW_PROJECT_DIR` and adding `openclaw` to `AGENT_LIST`.
 - Uses `CODEX_GRAPH_IMAGE` (`craftslab/codex-graph-cli:latest`) for `POST /graph/run` with stdin payload:
   - `analyze --request-json - --pretty`
   - Request fields (`code`, `file_paths`, `framework_hint`, optional `metadata`, optional `http_connections`) are serialized to JSON and passed via stdin.
@@ -274,8 +229,8 @@ curl "http://localhost:8000/agents"
 
 ```json
 {
-  "agents": ["codex", "kimi", "openclaw", "opencode", "qwen"],
-  "count": 5
+  "agents": ["codex", "opencode", "qwen", "kimi"],
+  "count": 4
 }
 ```
 

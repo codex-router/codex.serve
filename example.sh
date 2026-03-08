@@ -5,24 +5,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASE_URL="${BASE_URL:-http://localhost:8000}"
 SESSION_ID="demo-$(date +%s)"
 TEAM_SESSION_ID="demo-team-$(date +%s)"
-OPENCLAW_SESSION_ID="demo-openclaw-$(date +%s)"
 REPO_PATH="${REPO_PATH:-$(pwd)}"
 DRY_RUN="${DRY_RUN:-false}"
 LITELLM_SSL_VERIFY="${LITELLM_SSL_VERIFY:-false}"
 LITELLM_CA_BUNDLE="${LITELLM_CA_BUNDLE:-}"
 TEAM_AGENT="${TEAM_AGENT:-team}"
 TEAM_DEMO_ENABLED="${TEAM_DEMO_ENABLED:-true}"
-OPENCLAW_DEMO_ENABLED="${OPENCLAW_DEMO_ENABLED:-false}"
-OPENCLAW_COMPOSE_FILE="${OPENCLAW_COMPOSE_FILE:-}"
-OPENCLAW_PROJECT_DIR="${OPENCLAW_PROJECT_DIR:-}"
-OPENCLAW_CLI_SERVICE="${OPENCLAW_CLI_SERVICE:-openclaw-cli}"
-OPENCLAW_GATEWAY_SERVICE="${OPENCLAW_GATEWAY_SERVICE:-openclaw-gateway}"
-OPENCLAW_AUTO_START_GATEWAY="${OPENCLAW_AUTO_START_GATEWAY:-true}"
-OPENCLAW_TUI_URL="${OPENCLAW_TUI_URL:-ws://127.0.0.1:18789}"
-OPENCLAW_TUI_TOKEN="${OPENCLAW_TUI_TOKEN:-}"
-OPENCLAW_TUI_PASSWORD="${OPENCLAW_TUI_PASSWORD:-}"
-OPENCLAW_IMAGE="${OPENCLAW_IMAGE:-ghcr.io/openclaw/openclaw:main-amd64}"
-OPENCLAW_STOP_WAIT_SECONDS="${OPENCLAW_STOP_WAIT_SECONDS:-15}"
 GRAPH_MODEL="${GRAPH_MODEL:-}"
 GRAPH_MAX_RETRIES="${GRAPH_MAX_RETRIES:-3}"
 GRAPH_RETRY_DELAY_SECONDS="${GRAPH_RETRY_DELAY_SECONDS:-10}"
@@ -46,8 +34,6 @@ GRAPH_PAYLOAD="/tmp/codex-serve-graph-payload-${RUN_DATE}.json"
 GRAPH_RESPONSE="/tmp/codex-serve-graph-response-${RUN_DATE}.json"
 SANDBOX_PAYLOAD="/tmp/codex-serve-sandbox-payload-${RUN_DATE}.json"
 SANDBOX_RESPONSE="/tmp/codex-serve-sandbox-response-${RUN_DATE}.json"
-OPENCLAW_PAYLOAD="/tmp/codex-serve-openclaw-payload-${RUN_DATE}.json"
-OPENCLAW_RESPONSE="/tmp/codex-serve-openclaw-response-${RUN_DATE}.ndjson"
 
 resolve_graph_model_from_compose() {
   local compose_file="${COMPOSE_FILE:-${SCRIPT_DIR}/docker-compose.yml}"
@@ -104,8 +90,6 @@ cleanup() {
   rm -f "${GRAPH_RESPONSE}"
   rm -f "${SANDBOX_PAYLOAD}"
   rm -f "${SANDBOX_RESPONSE}"
-  rm -f "${OPENCLAW_PAYLOAD}"
-  rm -f "${OPENCLAW_RESPONSE}"
 }
 trap cleanup EXIT
 
@@ -152,98 +136,6 @@ ensure_sandbox_bash_runtime() {
   rm -f "${install_body}"
 }
 
-run_openclaw_demo() {
-  if [[ -z "${OPENCLAW_COMPOSE_FILE}" && -z "${OPENCLAW_PROJECT_DIR}" ]]; then
-    echo "openclaw demo requires OPENCLAW_COMPOSE_FILE or OPENCLAW_PROJECT_DIR"
-    return 1
-  fi
-
-  echo
-  echo "Testing POST ${BASE_URL}/agent/run with agent=openclaw"
-  echo "openclawSessionId=${OPENCLAW_SESSION_ID}"
-  echo "openclawStopWaitSeconds=${OPENCLAW_STOP_WAIT_SECONDS}"
-  echo "openclawComposeFile=${OPENCLAW_COMPOSE_FILE:-<derived-from-project-dir>}"
-  echo "openclawProjectDir=${OPENCLAW_PROJECT_DIR:-<derived-from-compose-file>}"
-  echo "openclawTuiUrl=${OPENCLAW_TUI_URL}"
-
-  python3 - \
-    "${OPENCLAW_PAYLOAD}" \
-    "${OPENCLAW_SESSION_ID}" \
-    "${OPENCLAW_COMPOSE_FILE}" \
-    "${OPENCLAW_PROJECT_DIR}" \
-    "${OPENCLAW_CLI_SERVICE}" \
-    "${OPENCLAW_GATEWAY_SERVICE}" \
-    "${OPENCLAW_AUTO_START_GATEWAY}" \
-    "${OPENCLAW_TUI_URL}" \
-    "${OPENCLAW_TUI_TOKEN}" \
-    "${OPENCLAW_TUI_PASSWORD}" \
-    "${OPENCLAW_IMAGE}" <<'PY'
-import json
-import sys
-
-payload_path = sys.argv[1]
-session_id = sys.argv[2]
-compose_file = sys.argv[3].strip()
-project_dir = sys.argv[4].strip()
-cli_service = sys.argv[5].strip()
-gateway_service = sys.argv[6].strip()
-auto_start = sys.argv[7].strip()
-tui_url = sys.argv[8].strip()
-tui_token = sys.argv[9].strip()
-tui_password = sys.argv[10].strip()
-openclaw_image = sys.argv[11].strip()
-
-env = {}
-if compose_file:
-    env["OPENCLAW_COMPOSE_FILE"] = compose_file
-if project_dir:
-    env["OPENCLAW_PROJECT_DIR"] = project_dir
-if cli_service:
-    env["OPENCLAW_CLI_SERVICE"] = cli_service
-if gateway_service:
-    env["OPENCLAW_GATEWAY_SERVICE"] = gateway_service
-if auto_start:
-    env["OPENCLAW_AUTO_START_GATEWAY"] = auto_start
-if tui_url:
-    env["OPENCLAW_TUI_URL"] = tui_url
-if tui_token:
-    env["OPENCLAW_TUI_TOKEN"] = tui_token
-if tui_password:
-    env["OPENCLAW_TUI_PASSWORD"] = tui_password
-if openclaw_image:
-    env["OPENCLAW_IMAGE"] = openclaw_image
-
-payload = {
-    "agent": "openclaw",
-    "args": [],
-    "stdin": "Summarize the current OpenClaw gateway status in one short paragraph.",
-    "sessionId": session_id,
-}
-
-if env:
-    payload["env"] = env
-
-with open(payload_path, "w", encoding="utf-8") as f:
-    json.dump(payload, f)
-PY
-
-  curl -sS -N -o "${OPENCLAW_RESPONSE}" \
-    -X POST "${BASE_URL}/agent/run" \
-    -H "Content-Type: application/json" \
-    --data-binary "@${OPENCLAW_PAYLOAD}" &
-  local openclaw_run_pid=$!
-
-  sleep "${OPENCLAW_STOP_WAIT_SECONDS}"
-
-  if kill -0 "${openclaw_run_pid}" >/dev/null 2>&1; then
-    echo "Stopping OpenClaw TUI-backed session via ${BASE_URL}/sessions/${OPENCLAW_SESSION_ID}/stop"
-    curl -sS -X POST "${BASE_URL}/sessions/${OPENCLAW_SESSION_ID}/stop" >/dev/null || true
-  fi
-
-  wait "${openclaw_run_pid}" || true
-  cat "${OPENCLAW_RESPONSE}"
-}
-
 echo "Testing POST ${BASE_URL}/agent/run with sessionId=${SESSION_ID}"
 echo "Expect NDJSON stream with: session/stdout|stderr/exit"
 echo "demoContextOverflow=${DEMO_CONTEXT_OVERFLOW}"
@@ -284,10 +176,6 @@ if [[ "${TEAM_DEMO_ENABLED}" =~ ^(1|true|yes|on)$ ]]; then
   "sessionId": "${TEAM_SESSION_ID}"
 }
 EOF
-fi
-
-if [[ "${OPENCLAW_DEMO_ENABLED}" =~ ^(1|true|yes|on)$ ]]; then
-  run_openclaw_demo
 fi
 
 if [[ "${DEMO_CONTEXT_OVERFLOW}" =~ ^(1|true|yes|on)$ ]]; then

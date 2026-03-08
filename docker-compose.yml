@@ -18,28 +18,13 @@ services:
       # Tell codex.serve to use the graph docker image
       - CODEX_GRAPH_IMAGE=${CODEX_GRAPH_IMAGE:-craftslab/codex-graph-cli:latest}
       # Supported agent providers (comma-separated)
-      - AGENT_LIST=codex,kimi,openclaw,opencode,qwen,team
+      - AGENT_LIST=codex,kimi,opencode,qwen,team
       # Supported model IDs (comma-separated)
       - AGENT_MODEL=auto,ollama-kimi-k2.5,ollama-minimax-m2.5,ollama-qwen3-coder
       - INSIGHT_MODEL=ollama-gemini-3-flash-preview
       - GRAPH_MODEL=ollama-gemini-3-flash-preview
       # codex.sandbox piston API used by /sandbox/run
       - SANDBOX_BASE_URL=${SANDBOX_BASE_URL:-http://codex-sandbox:2000}
-      # OpenClaw Docker Compose integration for agent=openclaw
-      - OPENCLAW_COMPOSE_FILE=${OPENCLAW_COMPOSE_FILE:-docker-compose.yml}
-      - OPENCLAW_PROJECT_DIR=${OPENCLAW_PROJECT_DIR:-openclaw}
-      - OPENCLAW_CLI_SERVICE=${OPENCLAW_CLI_SERVICE:-openclaw-cli}
-      - OPENCLAW_GATEWAY_SERVICE=${OPENCLAW_GATEWAY_SERVICE:-openclaw-gateway}
-      - OPENCLAW_AUTO_START_GATEWAY=${OPENCLAW_AUTO_START_GATEWAY:-true}
-      - OPENCLAW_TOOLS_PROFILE=${OPENCLAW_TOOLS_PROFILE:-full}
-      - OPENCLAW_GATEWAY_MODE=${OPENCLAW_GATEWAY_MODE:-local}
-      - OPENCLAW_GATEWAY_PORT=${OPENCLAW_GATEWAY_PORT:-18789}
-      - OPENCLAW_GATEWAY_BIND=${OPENCLAW_GATEWAY_BIND:-lan}
-      - OPENCLAW_CONTROL_UI_ALLOW_INSECURE_AUTH=${OPENCLAW_CONTROL_UI_ALLOW_INSECURE_AUTH:-}
-      - OPENCLAW_TUI_URL=${OPENCLAW_TUI_URL:-ws://127.0.0.1:18789}
-      - OPENCLAW_TUI_TOKEN=${OPENCLAW_TUI_TOKEN:-}
-      - OPENCLAW_TUI_PASSWORD=${OPENCLAW_TUI_PASSWORD:-}
-      - OPENCLAW_IMAGE=${OPENCLAW_IMAGE:-ghcr.io/openclaw/openclaw:main-amd64}
       # LiteLLM endpoint and credentials
       - LITELLM_BASE_URL=${LITELLM_BASE_URL}
       - LITELLM_API_KEY=${LITELLM_API_KEY}

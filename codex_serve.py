@@ -5,7 +5,6 @@ import codecs
 import base64
 import logging
 import shutil
-import subprocess
 import tempfile
 import urllib.request
 import urllib.error
@@ -123,7 +122,6 @@ AGENT_LIST = [
     if agent.strip()
 ]
 TEAM_AGENT_NAME = "team"
-OPENCLAW_AGENT_NAME = "openclaw"
 
 # Optional Docker configuration
 DOCKER_IMAGE = os.environ.get("CODEX_AGENT_IMAGE")
@@ -609,242 +607,6 @@ def _replace_model_args(args: List[str], model: str) -> List[str]:
     return replaced_args
 
 
-def _openclaw_env_value(req_env: Optional[Dict[str, str]], key: str, default: str = "") -> str:
-    raw_value = (req_env or {}).get(key)
-    if raw_value is None:
-        raw_value = os.environ.get(key)
-    if raw_value is None:
-        raw_value = default
-    return str(raw_value).strip()
-
-
-def _resolve_docker_compose_command() -> List[str]:
-    docker_path = shutil.which("docker")
-    if docker_path:
-        try:
-            result = subprocess.run(
-                [docker_path, "compose", "version"],
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=5,
-            )
-            if result.returncode == 0:
-                return [docker_path, "compose"]
-        except Exception:
-            pass
-
-    docker_compose_path = shutil.which("docker-compose")
-    if docker_compose_path:
-        return [docker_compose_path]
-
-    raise HTTPException(
-        status_code=500,
-        detail=(
-            "OpenClaw requires Docker Compose, but neither 'docker compose' nor "
-            "'docker-compose' is available."
-        ),
-    )
-
-
-def _resolve_openclaw_compose_paths(req_env: Optional[Dict[str, str]]) -> tuple[str, str]:
-    compose_file = _openclaw_env_value(req_env, "OPENCLAW_COMPOSE_FILE")
-    project_dir = _openclaw_env_value(req_env, "OPENCLAW_PROJECT_DIR")
-
-    if project_dir:
-        project_dir = os.path.abspath(os.path.expanduser(project_dir))
-
-    if compose_file:
-        compose_file = os.path.abspath(os.path.expanduser(compose_file))
-    elif project_dir:
-        compose_file = os.path.join(project_dir, "docker-compose.yml")
-
-    if compose_file and not project_dir:
-        project_dir = os.path.dirname(compose_file)
-
-    return compose_file, project_dir
-
-
-def _run_openclaw_compose_command(
-    compose_command: List[str],
-    compose_file: str,
-    project_dir: str,
-    extra_args: List[str],
-    timeout_seconds: float,
-) -> subprocess.CompletedProcess:
-    command = list(compose_command)
-    if project_dir:
-        command.extend(["--project-directory", project_dir])
-    command.extend(["-f", compose_file])
-    command.extend(extra_args)
-
-    try:
-        return subprocess.run(
-            command,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=max(1.0, timeout_seconds),
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise HTTPException(
-            status_code=504,
-            detail=(
-                "OpenClaw Docker Compose command timed out: "
-                + " ".join(command)
-            ),
-        ) from exc
-
-
-def _ensure_openclaw_runtime_config(
-    compose_command: List[str],
-    compose_file: str,
-    project_dir: str,
-    req_env: Optional[Dict[str, str]],
-) -> None:
-    cli_service = (
-        _openclaw_env_value(req_env, "OPENCLAW_CLI_SERVICE", "openclaw-cli")
-        or "openclaw-cli"
-    )
-
-    config_updates: List[tuple[str, str]] = []
-
-    tools_profile = _openclaw_env_value(req_env, "OPENCLAW_TOOLS_PROFILE", "full")
-    if tools_profile:
-        config_updates.append(("tools.profile", tools_profile))
-
-    gateway_mode = _openclaw_env_value(req_env, "OPENCLAW_GATEWAY_MODE", "local")
-    if gateway_mode:
-        config_updates.append(("gateway.mode", gateway_mode))
-
-    gateway_port = _openclaw_env_value(req_env, "OPENCLAW_GATEWAY_PORT", "18789")
-    if gateway_port:
-        config_updates.append(("gateway.port", gateway_port))
-
-    gateway_bind = _openclaw_env_value(req_env, "OPENCLAW_GATEWAY_BIND", "lan")
-    if gateway_bind:
-        config_updates.append(("gateway.bind", gateway_bind))
-
-    control_ui_allow_insecure_auth = _openclaw_env_value(
-        req_env,
-        "OPENCLAW_CONTROL_UI_ALLOW_INSECURE_AUTH",
-    )
-    if control_ui_allow_insecure_auth:
-        config_updates.append(
-            (
-                "gateway.controlUi.allowInsecureAuth",
-                control_ui_allow_insecure_auth.lower(),
-            )
-        )
-
-    for config_path, config_value in config_updates:
-        result = _run_openclaw_compose_command(
-            compose_command,
-            compose_file,
-            project_dir,
-            ["run", "-T", "--rm", cli_service, "config", "set", config_path, config_value],
-            timeout_seconds=120.0,
-        )
-        if result.returncode == 0:
-            continue
-
-        detail = (result.stderr or result.stdout or "failed to update OpenClaw config").strip()
-        raise HTTPException(
-            status_code=502,
-            detail=f"Failed to apply OpenClaw config '{config_path}': {detail}",
-        )
-
-
-def _ensure_openclaw_gateway_running(
-    compose_command: List[str],
-    compose_file: str,
-    project_dir: str,
-    req_env: Optional[Dict[str, str]],
-) -> None:
-    auto_start_enabled = _parse_bool(
-        _openclaw_env_value(req_env, "OPENCLAW_AUTO_START_GATEWAY", "true"),
-        True,
-    )
-    if not auto_start_enabled:
-        return
-
-    gateway_service = (
-        _openclaw_env_value(req_env, "OPENCLAW_GATEWAY_SERVICE", "openclaw-gateway")
-        or "openclaw-gateway"
-    )
-    result = _run_openclaw_compose_command(
-        compose_command,
-        compose_file,
-        project_dir,
-        ["up", "-d", gateway_service],
-        timeout_seconds=120.0,
-    )
-    if result.returncode == 0:
-        return
-
-    detail = (result.stderr or result.stdout or "failed to start openclaw-gateway").strip()
-    raise HTTPException(
-        status_code=502,
-        detail=f"Failed to start OpenClaw gateway via Docker Compose: {detail}",
-    )
-
-
-def _build_openclaw_command(
-    args: List[str],
-    stdin_payload: str,
-    req_env: Optional[Dict[str, str]],
-    session_id: Optional[str],
-) -> tuple[List[str], Dict[str, str]]:
-    compose_file, project_dir = _resolve_openclaw_compose_paths(req_env)
-    if not compose_file:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "OpenClaw requires OPENCLAW_COMPOSE_FILE or OPENCLAW_PROJECT_DIR to point "
-                "at the OpenClaw Docker Compose project."
-            ),
-        )
-
-    if not os.path.isfile(compose_file):
-        raise HTTPException(
-            status_code=400,
-            detail=f"OpenClaw compose file not found: {compose_file}",
-        )
-
-    cli_service = _openclaw_env_value(req_env, "OPENCLAW_CLI_SERVICE", "openclaw-cli") or "openclaw-cli"
-
-    popen_env = os.environ.copy()
-    if req_env:
-        popen_env.update(req_env)
-
-    normalized_args = _strip_model_args(list(args))
-    command = _resolve_docker_compose_command()
-    _ensure_openclaw_runtime_config(command, compose_file, project_dir, req_env)
-    _ensure_openclaw_gateway_running(command, compose_file, project_dir, req_env)
-
-    tui_url = _openclaw_env_value(req_env, "OPENCLAW_TUI_URL", "ws://127.0.0.1:18789")
-    tui_token = _openclaw_env_value(req_env, "OPENCLAW_TUI_TOKEN")
-    tui_password = _openclaw_env_value(req_env, "OPENCLAW_TUI_PASSWORD")
-
-    if project_dir:
-        command.extend(["--project-directory", project_dir])
-    command.extend(["-f", compose_file, "run", "--rm", cli_service, "tui"])
-
-    if tui_url:
-        command.extend(["--url", tui_url])
-    if tui_token:
-        command.extend(["--token", tui_token])
-    if tui_password:
-        command.extend(["--password", tui_password])
-
-    if session_id:
-        command.extend(["--session", session_id])
-
-    command.extend(normalized_args)
-    command.extend(["--message", stdin_payload or ""])
-    return command, popen_env
-
-
 def _parse_float(value: Any) -> Optional[float]:
     if value is None:
         return None
@@ -1089,12 +851,7 @@ def _build_agent_command(
     agent: str,
     args: List[str],
     req_env: Optional[Dict[str, str]],
-    stdin_payload: Optional[str] = None,
-    session_id: Optional[str] = None,
 ) -> tuple[List[str], Dict[str, str]]:
-    if agent == OPENCLAW_AGENT_NAME:
-        return _build_openclaw_command(args, stdin_payload or "", req_env, session_id)
-
     popen_env = os.environ.copy()
     normalized_args = list(args)
 
@@ -1217,8 +974,8 @@ async def _execute_agent_once(
     args: List[str],
     stdin_payload: str,
     req_env: Optional[Dict[str, str]],
-    session_id: Optional[str] = None,
 ) -> Dict[str, Any]:
+    command, popen_env = _build_agent_command(agent, args, req_env)
     timeout_message = (
         "Request timed out while waiting for agent response "
         f"({RESPONSE_TIMEOUT_SECONDS}s)."
@@ -1227,16 +984,9 @@ async def _execute_agent_once(
     current_payload = stdin_payload
     compression_retried = False
     while True:
-        command, popen_env = _build_agent_command(
-            agent,
-            args,
-            req_env,
-            stdin_payload=current_payload,
-            session_id=session_id,
-        )
         exit_code, stdout_text, stderr_text = await _run_subprocess_capture_with_stdin(
             command,
-            stdin_text="" if agent == OPENCLAW_AGENT_NAME else current_payload,
+            stdin_text=current_payload,
             timeout=RESPONSE_TIMEOUT_SECONDS,
             timeout_message=timeout_message,
             env=popen_env,
@@ -1303,7 +1053,6 @@ async def _execute_team_collaboration(
             normalized_req_args,
             _build_team_round1_prompt(stdin_payload, role_by_agent[agent_name], agent_name),
             req_env,
-            session_id=f"{session_id}-{agent_name}",
         )
         for agent_name in specialists
     ]
@@ -1324,7 +1073,6 @@ async def _execute_team_collaboration(
                 round1_stdout_map,
             ),
             req_env,
-            session_id=f"{session_id}-{agent_name}",
         )
         for agent_name in specialists
     ]
@@ -1345,7 +1093,6 @@ async def _execute_team_collaboration(
             round2_stdout_map,
         ),
         req_env,
-        session_id=f"{session_id}-{coordinator_agent}",
     )
 
     return {
@@ -2424,6 +2171,8 @@ async def run_agent(req: RunRequest):
     if auto_selected_model:
         normalized_req_args = _replace_model_args(normalized_req_args, auto_selected_model)
 
+    command, popen_env = _build_agent_command(req.agent, normalized_req_args, req.env)
+
     queue_lease = await AGENT_REQUEST_QUEUE.acquire()
 
     async def stream_generator():
@@ -2516,13 +2265,6 @@ async def run_agent(req: RunRequest):
                 process = None
                 stderr_events: List[str] = []
                 try:
-                    command, popen_env = _build_agent_command(
-                        req.agent,
-                        normalized_req_args,
-                        req.env,
-                        stdin_payload=stdin_payload_current,
-                        session_id=sessionId,
-                    )
                     process = await asyncio.create_subprocess_exec(
                         *command,
                         stdin=asyncio.subprocess.PIPE,
@@ -2532,7 +2274,7 @@ async def run_agent(req: RunRequest):
                     )
                     await _register_session(sessionId, process)
 
-                    if stdin_payload_current and req.agent != OPENCLAW_AGENT_NAME:
+                    if stdin_payload_current:
                         process.stdin.write(stdin_payload_current.encode())
                         await process.stdin.drain()
                     process.stdin.close()
