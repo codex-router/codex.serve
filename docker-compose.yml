@@ -48,7 +48,7 @@ services:
       # codex.sandbox piston API used by /sandbox/run
       - SANDBOX_BASE_URL=${SANDBOX_BASE_URL:-http://codex-sandbox:2000}
       # OpenClaw Docker Compose integration for agent=openclaw
-      - OPENCLAW_COMPOSE_FILE=${OPENCLAW_COMPOSE_FILE:-}
+      - OPENCLAW_COMPOSE_FILE=${OPENCLAW_COMPOSE_FILE:-/workspace/openclaw/docker-compose.yml}
       - OPENCLAW_PROJECT_DIR=${OPENCLAW_PROJECT_DIR:-/workspace/openclaw}
       - OPENCLAW_CLI_SERVICE=${OPENCLAW_CLI_SERVICE:-openclaw-cli}
       - OPENCLAW_GATEWAY_SERVICE=${OPENCLAW_GATEWAY_SERVICE:-openclaw-gateway}
