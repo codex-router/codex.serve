@@ -146,7 +146,6 @@ Request behavior:
 - `--model` / `-m` arguments are stripped because OpenClaw uses its own gateway/model configuration.
 - `codex.serve` inspects the Compose project with `docker compose config --services`, falls back to detected service names when `openclaw-cli` / `openclaw-gateway` are not present, and rejects Compose files that only expose unrelated services such as `codex-serve` / `codex-sandbox`.
 - When `OPENCLAW_TUI_URL` is unset, `codex.serve` automatically uses `ws://<resolved-gateway-service>:<OPENCLAW_GATEWAY_PORT>` instead of `127.0.0.1`, which is required for Docker-in-Docker Compose networking.
-- For Compose interpolation, `codex.serve` also injects defaults for `OPENCLAWCONFIGDIR`, `OPENCLAWWORKSPACEDIR`, and `OPENCLAWGATEWAYTOKEN`, then creates the config/workspace directories before running any OpenClaw Compose command.
 - Before startup, `codex.serve` runs `openclaw-cli config set` so OpenClaw can use `tools.profile`, `gateway.mode`, `gateway.port`, and `gateway.bind` values configured through `OPENCLAW_*` env vars.
 - `codex.serve` runs `docker-compose up -d openclaw-gateway` before launching the TUI unless `OPENCLAW_AUTO_START_GATEWAY=false`.
 

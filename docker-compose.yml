@@ -62,9 +62,6 @@ services:
       - OPENCLAW_TUI_TOKEN=${OPENCLAW_TUI_TOKEN:-}
       - OPENCLAW_TUI_PASSWORD=${OPENCLAW_TUI_PASSWORD:-}
       - OPENCLAW_IMAGE=${OPENCLAW_IMAGE:-ghcr.io/openclaw/openclaw:main-amd64}
-      - OPENCLAWCONFIGDIR=${OPENCLAWCONFIGDIR:-/workspace/openclaw/.openclaw}
-      - OPENCLAWWORKSPACEDIR=${OPENCLAWWORKSPACEDIR:-/workspace/openclaw/workspace}
-      - OPENCLAWGATEWAYTOKEN=${OPENCLAWGATEWAYTOKEN:-openclaw-dev-token}
       # LiteLLM endpoint and credentials
       - LITELLM_BASE_URL=${LITELLM_BASE_URL}
       - LITELLM_API_KEY=${LITELLM_API_KEY}
