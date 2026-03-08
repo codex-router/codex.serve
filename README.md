@@ -55,17 +55,17 @@ The server reads supported agents from `AGENT_LIST` (comma-separated). In local 
 |----------|---------|-------------|
 | `AGENT_LIST` | `codex` | Supported agent names (comma-separated). Include `team` to enable team orchestration mode for `POST /agent/run`; all non-`team` entries are used as specialist agents. Add `openclaw` to enable the OpenClaw Docker Compose runner. |
 | `AGENT_MODEL` | *(empty)* | Returned model IDs for `GET /models` (comma-separated). Include `auto` to enable server-side auto selection for `POST /agent/run` when request args contain `--model auto`. |
-| `OPENCLAW_COMPOSE_FILE` | *(unset)* | Path to the OpenClaw `docker-compose.yml` used when `agent=openclaw`; should point to the real OpenClaw Compose project, not `codex.serve`'s own stack |
-| `OPENCLAW_PROJECT_DIR` | *(unset)* | Optional OpenClaw project root. If `OPENCLAW_COMPOSE_FILE` is unset, `codex.serve` uses `<OPENCLAW_PROJECT_DIR>/docker-compose.yml`. In the bundled Docker Compose setup, this defaults to `/workspace/openclaw`. |
-| `OPENCLAW_CLI_SERVICE` | `openclaw-cli` | Preferred Compose service name used for OpenClaw CLI runs; if it does not exist, `codex.serve` tries to auto-detect a compatible CLI service from the Compose project |
-| `OPENCLAW_GATEWAY_SERVICE` | `openclaw-gateway` | Preferred Compose service name used when `codex.serve` auto-starts the OpenClaw gateway; if it does not exist, `codex.serve` tries to auto-detect a compatible gateway service |
+| `OPENCLAW_COMPOSE_FILE` | *(unset)* | Path to the OpenClaw `docker-compose.yml` used when `agent=openclaw` |
+| `OPENCLAW_PROJECT_DIR` | *(unset)* | Optional OpenClaw project root. If `OPENCLAW_COMPOSE_FILE` is unset, `codex.serve` uses `<OPENCLAW_PROJECT_DIR>/docker-compose.yml` |
+| `OPENCLAW_CLI_SERVICE` | `openclaw-cli` | Compose service name used for OpenClaw CLI runs |
+| `OPENCLAW_GATEWAY_SERVICE` | `openclaw-gateway` | Compose service name used when `codex.serve` auto-starts the OpenClaw gateway |
 | `OPENCLAW_AUTO_START_GATEWAY` | `true` | Whether `codex.serve` should run `docker-compose up -d openclaw-gateway` before handling `agent=openclaw` |
 | `OPENCLAW_TOOLS_PROFILE` | `full` | Value written to `tools.profile` before OpenClaw startup |
 | `OPENCLAW_GATEWAY_MODE` | `local` | Value written to `gateway.mode` before OpenClaw startup |
 | `OPENCLAW_GATEWAY_PORT` | `18789` | Value written to `gateway.port` before OpenClaw startup |
 | `OPENCLAW_GATEWAY_BIND` | `lan` | Value written to `gateway.bind` before OpenClaw startup |
 | `OPENCLAW_CONTROL_UI_ALLOW_INSECURE_AUTH` | *(unset)* | Optional value written to `gateway.controlUi.allowInsecureAuth` before OpenClaw startup |
-| `OPENCLAW_TUI_URL` | *(auto)* | Optional WebSocket URL passed to `openclaw-cli tui`. When unset, `codex.serve` derives `ws://<gateway-service>:<gateway-port>` so nested Compose/Docker-in-Docker execution can reach the OpenClaw gateway. |
+| `OPENCLAW_TUI_URL` | `ws://127.0.0.1:18789` | WebSocket URL passed to `openclaw-cli tui` |
 | `OPENCLAW_TUI_TOKEN` | *(unset)* | Optional Gateway token passed to `openclaw-cli tui` |
 | `OPENCLAW_TUI_PASSWORD` | *(unset)* | Optional Gateway password passed to `openclaw-cli tui` |
 | `OPENCLAW_IMAGE` | *(unset)* | Optional image tag forwarded to the OpenClaw Compose process (for example `ghcr.io/openclaw/openclaw:main-amd64`) |
@@ -122,8 +122,6 @@ When `agent` is `openclaw`, `codex.serve` does not use `CODEX_AGENT_IMAGE`. Inst
 
 or the equivalent `docker-compose` commands.
 
-When `codex.serve` runs inside this repository's [docker-compose.yml](docker-compose.yml), Docker commands go through a bundled Docker-in-Docker daemon (`docker-dind`) instead of the host Docker socket. This allows `codex.serve` to launch the separate OpenClaw Compose project from inside the `codex-serve` container.
-
 Prerequisites:
 
 1. Prepare the OpenClaw project once:
@@ -133,10 +131,7 @@ Prerequisites:
   - `docker-compose down`
   - `docker-compose up -d openclaw-gateway`
 2. Set either `OPENCLAW_COMPOSE_FILE` or `OPENCLAW_PROJECT_DIR` for `codex.serve`.
-  - Do not leave `OPENCLAW_COMPOSE_FILE` pointed at `codex.serve/docker-compose.yml`; that file only defines `codex-serve` and `codex-sandbox` services.
-3. If `codex.serve` runs in the bundled Docker Compose stack, mount the OpenClaw project into both `codex-serve` and `docker-dind` at the same path.
-  - The provided [docker-compose.yml](docker-compose.yml) does this with `${OPENCLAW_PROJECT_MOUNT_SOURCE:-./openclaw}:${OPENCLAW_PROJECT_DIR:-/workspace/openclaw}`.
-  - Put the real OpenClaw project under `./openclaw`, or override `OPENCLAW_PROJECT_MOUNT_SOURCE` and optionally `OPENCLAW_PROJECT_DIR`.
+3. If `codex.serve` runs in Docker, mount the OpenClaw project into the container at the same absolute host path so Compose bind mounts still resolve correctly.
 4. Optionally set `OPENCLAW_TUI_TOKEN` or `OPENCLAW_TUI_PASSWORD` if the Gateway requires auth.
 
 Request behavior:
@@ -144,8 +139,6 @@ Request behavior:
 - `stdin` is mapped to `openclaw tui --message <stdin>`.
 - `sessionId` is mapped to `openclaw tui --session <sessionId>`.
 - `--model` / `-m` arguments are stripped because OpenClaw uses its own gateway/model configuration.
-- `codex.serve` inspects the Compose project with `docker compose config --services`, falls back to detected service names when `openclaw-cli` / `openclaw-gateway` are not present, and rejects Compose files that only expose unrelated services such as `codex-serve` / `codex-sandbox`.
-- When `OPENCLAW_TUI_URL` is unset, `codex.serve` automatically uses `ws://<resolved-gateway-service>:<OPENCLAW_GATEWAY_PORT>` instead of `127.0.0.1`, which is required for Docker-in-Docker Compose networking.
 - Before startup, `codex.serve` runs `openclaw-cli config set` so OpenClaw can use `tools.profile`, `gateway.mode`, `gateway.port`, and `gateway.bind` values configured through `OPENCLAW_*` env vars.
 - `codex.serve` runs `docker-compose up -d openclaw-gateway` before launching the TUI unless `OPENCLAW_AUTO_START_GATEWAY=false`.
 
@@ -163,7 +156,7 @@ The server will start on `http://0.0.0.0:8000`.
 
 ### Run with Docker Compose (Recommended)
 
-To run `codex.serve` in a container while orchestrating the AI agent environment, use Docker Compose. This setup now uses a bundled Docker-in-Docker daemon, allowing the server container to launch regular agent containers and a separate OpenClaw Compose project without mounting the host Docker socket.
+To run `codex.serve` in a container while orchestrating the AI agent environment, use Docker Compose. This setup uses the "Sibling Containers" pattern, allowing the verified server container to spawn execution containers on the host Docker daemon.
 
 1.  Build the agent environment image (see `codex.agent/README.md`).
 2.  Start the service:
@@ -174,11 +167,10 @@ docker-compose up --build
 
 This configuration:
 - Builds/Runs `codex.serve` (defined in `Dockerfile`) which has the Docker client installed.
-- Starts a `docker-dind` daemon and points `codex.serve` at it via `DOCKER_HOST=tcp://docker-dind:2375`.
+- Mounts the host's Docker socket (`/var/run/docker.sock`) so it can spawn sibling containers.
 - Configures `CODEX_AGENT_IMAGE` to `craftslab/codex-agent:latest` for executing agents safely. The server container will spawn this image for each request.
 - Configures `CODEX_INSIGHT_IMAGE` to `craftslab/codex-insight:latest` for insight generation requests.
-- Shares `${OPENCLAW_PROJECT_MOUNT_SOURCE:-./openclaw}` into both `codex-serve` and `docker-dind` at `${OPENCLAW_PROJECT_DIR:-/workspace/openclaw}` so nested OpenClaw Compose bind mounts resolve correctly.
-- Can optionally route `agent=openclaw` through an OpenClaw Docker Compose project by setting `OPENCLAW_COMPOSE_FILE` or `OPENCLAW_PROJECT_DIR` and adding `openclaw` to `AGENT_LIST`.
+- Can optionally route `agent=openclaw` through an external OpenClaw Docker Compose project by setting `OPENCLAW_COMPOSE_FILE` or `OPENCLAW_PROJECT_DIR` and adding `openclaw` to `AGENT_LIST`.
 - Uses `CODEX_GRAPH_IMAGE` (`craftslab/codex-graph-cli:latest`) for `POST /graph/run` with stdin payload:
   - `analyze --request-json - --pretty`
   - Request fields (`code`, `file_paths`, `framework_hint`, optional `metadata`, optional `http_connections`) are serialized to JSON and passed via stdin.
@@ -186,11 +178,6 @@ This configuration:
 - Supports `GRAPH_MODEL` for `POST /graph/run` payload env forwarding as `LITELLM_MODEL`.
 - Supports `LITELLM_SSL_VERIFY` (default `false`) and optional `LITELLM_CA_BUNDLE` for LiteLLM/self-signed cert scenarios.
 - Sets `RUN_RESPONSE_TIMEOUT_SECONDS` in [docker-compose.yml](docker-compose.yml) (default `300`) to bound `POST /agent/run` response time in container deployments.
-
-If you want OpenClaw support in this mode:
-- place the OpenClaw Compose project at `./openclaw`, or set `OPENCLAW_PROJECT_MOUNT_SOURCE` to the real project path;
-- keep `OPENCLAW_PROJECT_DIR` aligned with the in-container mount target (default `/workspace/openclaw`);
-- leave `OPENCLAW_TUI_URL` unset unless you need a custom gateway address.
 
 See [docker-compose.yml](docker-compose.yml) for details.
 
