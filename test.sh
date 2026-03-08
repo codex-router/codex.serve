@@ -26,13 +26,10 @@ OPENCLAW_PROJECT_DIR="${OPENCLAW_PROJECT_DIR:-}"
 OPENCLAW_CLI_SERVICE="${OPENCLAW_CLI_SERVICE:-openclaw-cli}"
 OPENCLAW_GATEWAY_SERVICE="${OPENCLAW_GATEWAY_SERVICE:-openclaw-gateway}"
 OPENCLAW_AUTO_START_GATEWAY="${OPENCLAW_AUTO_START_GATEWAY:-true}"
-OPENCLAW_TUI_URL="${OPENCLAW_TUI_URL:-}"
+OPENCLAW_TUI_URL="${OPENCLAW_TUI_URL:-ws://127.0.0.1:18789}"
 OPENCLAW_TUI_TOKEN="${OPENCLAW_TUI_TOKEN:-}"
 OPENCLAW_TUI_PASSWORD="${OPENCLAW_TUI_PASSWORD:-}"
 OPENCLAW_IMAGE="${OPENCLAW_IMAGE:-ghcr.io/openclaw/openclaw:main-amd64}"
-OPENCLAWCONFIGDIR="${OPENCLAWCONFIGDIR:-${OPENCLAW_PROJECT_DIR:+${OPENCLAW_PROJECT_DIR}/.openclaw}}"
-OPENCLAWWORKSPACEDIR="${OPENCLAWWORKSPACEDIR:-${OPENCLAW_PROJECT_DIR:+${OPENCLAW_PROJECT_DIR}/workspace}}"
-OPENCLAWGATEWAYTOKEN="${OPENCLAWGATEWAYTOKEN:-openclaw-dev-token}"
 OPENCLAW_STOP_WAIT_SECONDS="${OPENCLAW_STOP_WAIT_SECONDS:-15}"
 
 if [ -z "${OPENCLAW_PROJECT_DIR}" ] && [ -n "${OPENCLAW_COMPOSE_FILE}" ]; then
@@ -41,16 +38,6 @@ fi
 
 if [ -z "${OPENCLAW_COMPOSE_FILE}" ] && [ -n "${OPENCLAW_PROJECT_DIR}" ]; then
 	OPENCLAW_COMPOSE_FILE="${OPENCLAW_PROJECT_DIR}/docker-compose.yml"
-fi
-
-if [ -n "${OPENCLAW_PROJECT_DIR}" ]; then
-	if [ -z "${OPENCLAWCONFIGDIR}" ]; then
-		OPENCLAWCONFIGDIR="${OPENCLAW_PROJECT_DIR}/.openclaw"
-	fi
-	if [ -z "${OPENCLAWWORKSPACEDIR}" ]; then
-		OPENCLAWWORKSPACEDIR="${OPENCLAW_PROJECT_DIR}/workspace"
-	fi
-	mkdir -p "${OPENCLAWCONFIGDIR}" "${OPENCLAWWORKSPACEDIR}"
 fi
 
 OPENCLAW_DOCKER_RUN_ARGS=()
@@ -652,15 +639,6 @@ if tui_password:
 	env["OPENCLAW_TUI_PASSWORD"] = tui_password
 if openclaw_image:
 	env["OPENCLAW_IMAGE"] = openclaw_image
-config_dir = os.environ.get("OPENCLAWCONFIGDIR", "").strip()
-workspace_dir = os.environ.get("OPENCLAWWORKSPACEDIR", "").strip()
-gateway_token = os.environ.get("OPENCLAWGATEWAYTOKEN", "").strip()
-if config_dir:
-	env["OPENCLAWCONFIGDIR"] = config_dir
-if workspace_dir:
-	env["OPENCLAWWORKSPACEDIR"] = workspace_dir
-if gateway_token:
-	env["OPENCLAWGATEWAYTOKEN"] = gateway_token
 
 payload = {
 	"agent": "openclaw",

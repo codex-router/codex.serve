@@ -682,15 +682,10 @@ def _build_openclaw_compose_env(
     default_config_dir = os.path.join(resolved_project_dir, ".openclaw")
     default_workspace_dir = os.path.join(resolved_project_dir, "workspace")
 
-    def _set_if_missing_or_blank(key: str, value: str) -> None:
-        existing_value = compose_env.get(key)
-        if existing_value is None or not str(existing_value).strip():
-            compose_env[key] = value
-
-    _set_if_missing_or_blank("OPENCLAW_PROJECT_DIR", resolved_project_dir)
-    _set_if_missing_or_blank("OPENCLAWCONFIGDIR", default_config_dir)
-    _set_if_missing_or_blank("OPENCLAWWORKSPACEDIR", default_workspace_dir)
-    _set_if_missing_or_blank("OPENCLAWGATEWAYTOKEN", "openclaw-dev-token")
+    compose_env.setdefault("OPENCLAW_PROJECT_DIR", resolved_project_dir)
+    compose_env.setdefault("OPENCLAWCONFIGDIR", default_config_dir)
+    compose_env.setdefault("OPENCLAWWORKSPACEDIR", default_workspace_dir)
+    compose_env.setdefault("OPENCLAWGATEWAYTOKEN", "openclaw-dev-token")
 
     for path_value in [default_config_dir, default_workspace_dir]:
         try:
@@ -701,26 +696,6 @@ def _build_openclaw_compose_env(
     return compose_env
 
 
-def _write_openclaw_compose_env_file(compose_env: Dict[str, str]) -> str:
-    env_keys = sorted(
-        key
-        for key in compose_env.keys()
-        if key.startswith("OPENCLAW") or key == "DOCKER_HOST"
-    )
-
-    with tempfile.NamedTemporaryFile(
-        mode="w",
-        encoding="utf-8",
-        suffix=".openclaw.env",
-        delete=False,
-    ) as env_file:
-        for key in env_keys:
-            value = str(compose_env.get(key, ""))
-            escaped_value = value.replace("\\", "\\\\").replace("\n", "\\n")
-            env_file.write(f"{key}={escaped_value}\n")
-        return env_file.name
-
-
 def _run_openclaw_compose_command(
     compose_command: List[str],
     compose_file: str,
@@ -729,15 +704,12 @@ def _run_openclaw_compose_command(
     timeout_seconds: float,
     req_env: Optional[Dict[str, str]] = None,
 ) -> subprocess.CompletedProcess:
-    compose_env = _build_openclaw_compose_env(req_env, project_dir)
-    env_file_path = _write_openclaw_compose_env_file(compose_env)
-
     command = list(compose_command)
     if project_dir:
         command.extend(["--project-directory", project_dir])
-    command.extend(["--env-file", env_file_path])
     command.extend(["-f", compose_file])
     command.extend(extra_args)
+    compose_env = _build_openclaw_compose_env(req_env, project_dir)
 
     try:
         return subprocess.run(
@@ -756,11 +728,6 @@ def _run_openclaw_compose_command(
                 + " ".join(command)
             ),
         ) from exc
-    finally:
-        try:
-            os.unlink(env_file_path)
-        except OSError:
-            logger.warning("Failed to remove temporary OpenClaw env file: %s", env_file_path)
 
 
 def _get_openclaw_compose_services(
